@@ -1,0 +1,10 @@
+services:
+  melotts:
+    build: .
+    image: melotts-ms
+    container_name: melotts
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    ports:
+      - "8000:8000"

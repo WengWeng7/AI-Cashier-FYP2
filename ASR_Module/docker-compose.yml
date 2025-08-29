@@ -1,0 +1,20 @@
+services:
+  asr_service:
+    build: .
+    container_name: whisper-ms
+    ports:
+      - "8001:8001"
+    volumes:
+      # Mount HuggingFace cache so model persists
+      - ./hf_models:/root/.cache/huggingface
+      # Optionally mount your code so hot reload works in dev
+      - .:/app
+    environment:
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]   # remove this block if CPU only
