@@ -1,0 +1,35 @@
+# Web framework
+fastapi
+uvicorn
+
+# Data validation
+pydantic
+
+# PDF generation
+reportlab
+
+# Web UI
+streamlit
+
+# Networking
+requests
+
+# Visualization
+pydeck
+pandas
+
+# QR code generation
+qrcode
+
+# LLM / LangChain
+langchain
+langchain-ollama
+langgraph
+langchain-community
+
+# Embeddings / Vector DB
+faiss-cpu
+sentence-transformers
+
+# Language detection
+langdetect

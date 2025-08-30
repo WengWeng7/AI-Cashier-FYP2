@@ -1,0 +1,82 @@
+General Information
+Current Directory:
+FYP2/
+├── ASR_Module/ # Automatic Speech Recognition (port 8000)
+├── LLM_Module/ # Language Model / Chat Module (port 8010)
+├── TTS_Module/ # Text-to-Speech Module (port 8020)
+├── Fare2.py
+├── LLM_UI_Chat2.py
+├── metro_data_full.py
+├── kl_metro_multilingual_faq.jsonl
+├── TTS_XTTS_FT.py
+└── venv310/ # Virtual environment (ignored in .gitignore)FYP2/
+
+Port Numbers for Modules
+ASR_Module use :8000
+LLM_Module use :8010
+TTS_Module use :8020
+
+Installation Steps for AI Cashier FYP2 Project.
+
+1. ASR_Module (Windows)
+cd to /ASR_Module
+
+Install requirements for whisperms.py
+- pip install -r requirements.txt
+
+Install ffmpeg
+- Install from here https://www.gyan.dev/ffmpeg/builds/
+- Get the .zip folder of the latest version
+- Create new folder in :C\ e.g. :C\ffmpeg
+- Unzip folder in :C\ffmpeg
+- Add the /bin in system environment PATH.
+
+Run the API file whisperms.py
+- uvicorn whisperms:app --host 0.0.0.0 --port 8000 --reload
+
+Docker Installation
+Prerequisites: Docker Compose & Docker Engine, download Docker Desktop (Windows).
+1. Create the image
+- docker-compose build
+2. Deploy and host the API
+- docker-compose up
+Stop hosting the Dockerized API
+- docker-compose stop
+
+If interested in ASR only, check out ASR UI in ASR_UI_api.py
+- streamlit run ASR_UI_api.py
+
+2. LLM_Module (Windows)
+cd to /LLM_Module
+
+Prerequisites:
+1. Install Ollama locally
+- Go to https://ollama.com/download/windows
+2. Pull llama3:8b and test in CMD
+- ollama pull llama3:8b
+- ollama run llama3:8b
+
+Install the requirements
+- pip install -r requirements.txt
+
+Run the API file llm_api.py
+- uvicorn llm_api:app --host 0.0.0.0 --port 8010 --reload
+
+When successfully hosting LLM Module API, check out LLM UI in llm_chat_ui.py
+- streamlit run llm_chat_ui.py
+
+3. TTS_Module (Windows/Linux)
+cd to /TTS_Module
+Noted that this module is designed to run on Linux
+espeak can be downloaded, but cannot be detected by its dependency.
+
+Docker Installation ONLY
+Prerequisites: Docker Compose & Docker Engine, download Docker Desktop (Windows).
+1. Create the image
+- docker-compose build
+2. Deploy and host the API
+- docker-compose up
+Stop hosting the Dockerized API
+- docker-compose stop
+
+

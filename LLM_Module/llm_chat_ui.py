@@ -3,12 +3,10 @@ import uuid
 import time
 import requests
 import io
-import base64
 import qrcode
 from typing import Dict, List
 import pydeck as pdk
 import pandas as pd
-import os
 from station_coords import station_coords
 
 # --- PDF generation (ReportLab) ---
@@ -156,11 +154,11 @@ def render_ticket_preview(ticket: Dict):
         unsafe_allow_html=True,
     )
     
+    # Generate PDF bytes
+    pdf_bytes = generate_ticket_pdf(ticket)
     try:
         with st.spinner("Please wait for awhile. Generating QR ticket for you..."):
             time.sleep(0.4)
-            # Generate PDF bytes
-            pdf_bytes = generate_ticket_pdf(ticket)
 
             # Create unique token and store PDF in memory (server)
             token = str(uuid.uuid4())
@@ -184,6 +182,14 @@ def render_ticket_preview(ticket: Dict):
             st.image(buf, caption="Scan QR to download ticket PDF", use_container_width=False)
     except Exception as e:
         st.error(f"Sorry, there was an error: {str(e)}")
+    st.download_button(
+        "⬇️ Download PDF Ticket",
+        data=pdf_bytes,
+        file_name=f"ticket_{ticket.get('ticket_id', uuid.uuid4())}.pdf",
+        mime="application/pdf",
+        key=f"download_{ticket.get('ticket_id', uuid.uuid4())}",
+        use_container_width=True,
+    )
 
 
 def build_route_text(seg1: List[str], seg2: List[str], interchange: List[str]) -> str:
