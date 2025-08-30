@@ -28,7 +28,7 @@ WORKDIR /workspace
 COPY melottsms.py .
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8020
 
 # Run FastAPI server
-CMD ["uvicorn", "melottsms:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "melottsms:app", "--host", "0.0.0.0", "--port", "8020"]
