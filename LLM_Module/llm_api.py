@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from ollama_llm import run_llm, kiosk_station
+#from hf_llm import run_llm, kiosk_station
 
 # QR ticket dependencies
 import io

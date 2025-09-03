@@ -14,6 +14,24 @@ lrt_kelana_jaya_line = [
     'USJ 7','Taipan','Wawasan','USJ 21','Alam Megah','Subang Alam','Putra Heights'
 ]
 
+brt_sunway_line = [
+    "Setia Jaya", "Mentari", "Sunway Lagoon", "SunMed", "SunU Monash", "South Quay USJ1", "USJ7"
+]
+
+lrt_ampang_line = [
+    "Sentul Timur", "Sentul", "Titiwangsa", "PWTC", "Sultan Ismail", "Bandaraya", "Masjid Jamek", "Plaza Rakyat",
+    "Hang Tuah", "Pudu", "Chan Sow Lin", "Miharja", "Maluri", "Pandan Jaya", "Pandan Indah", "Cempaka",
+    "Cahaya", "Ampang"
+]
+
+lrt_sri_petaling_line = [
+    "Sentul Timur", "Sentul", "Titiwangsa", "PWTC", "Sultan Ismail", "Bandaraya", "Masjid Jamek", "Plaza Rakyat",
+    "Hang Tuah", "Pudu", "Chan Sow Lin", "Cheras", "Salak Selatan", "Bandar Tun Razak", "Tasik Selatan",
+    "Sungai Besi", "Bukit Jalil", "Sri Petaling", "Awan Besar", "Muhibbah", "Alam Sutera", "Kinrara BK5",
+    "IOI Puchong Jaya", "Pusat Bandar Puchong", "Taman Perindustrian Puchong", "Bandar Puteri",
+    "Puchong Perdana", "Puchong Prima", "Putra Heights"
+],
+
 mrt_kajang_line = [
     'Sungai Buloh','Kampung Selamat','Kwasa Damansara','Kwasa Sentral','Kota Damansara',
     'Surian','Mutiara Damansara','Bandar Utama','TTDI','Phileo Damansara','Pusat Bandar Damansara',
@@ -21,6 +39,11 @@ mrt_kajang_line = [
     'Cochrane','Maluri','Taman Pertama','Taman Midah','Taman Mutiara','Taman Connaught',
     'Taman Suntex','Sri Raya','Bandar Tun Hussein Onn','Batu 11 Cheras','Bukit Dukung',
     'Sungai Jernih','Stadium Kajang','Kajang'
+]
+
+mrt_putrajaya_line = [
+    "Kwasa Damansara", "Kepong Baru", "Titiwangsa", "Chan Sow Lin", "Ampang Park", "Persiaran KLCC",
+    "Putrajaya Sentral"
 ]
 
 interchanges = {

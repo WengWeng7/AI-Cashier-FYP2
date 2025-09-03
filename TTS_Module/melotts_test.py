@@ -1,7 +1,16 @@
 import requests
+import tempfile
+import winsound
 
-resp_ms = requests.post("http://localhost:8000/infer", json={
-    "text": "Selamat datang ke Stesen LRT Kelana Jaya, bagaimana saya boleh membantu anda? Welcome to the LRT Kelana Jaya station, how can I assist you?",
-    "speaker": "Husein"
+resp_ms = requests.post("http://localhost:8020/infer", json={
+    "text": "Hari ini saya akan pergi ke rumah Aina, kamu nak ikut?",
+    "speaker": "Shafiqah Idayu"
 })
 with open("ms.wav", "wb") as f: f.write(resp_ms.content)
+
+with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+    tmp.write(resp_ms.content)
+    tmp_path = tmp.name
+
+# Play immediately (blocking until finished)
+winsound.PlaySound(tmp_path, winsound.SND_FILENAME)

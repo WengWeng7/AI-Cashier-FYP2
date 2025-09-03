@@ -18,10 +18,14 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from station_coords import station_coords
+# --- TTS Dependencies ---
+import winsound
+import threading
 
-LLM_URL = "http://localhost:8010/chat"
-ROOT_URL = "http://localhost:8000/"
 ASR_URL = "http://localhost:8000/transcribe"
+ROOT_URL = "http://localhost:8010/"
+LLM_URL = "http://localhost:8010/chat"
+TTS_URL = "http://localhost:8020/infer" 
 
 st.set_page_config(page_title="AI Ticketing Kiosk", page_icon="🚉", layout="wide")
 st.title("🚉 AI Ticketing Kiosk Assistant")
@@ -87,7 +91,7 @@ def transcribe_audio(file_path):
 # ---------------------------
 def get_ai_reply(user_input: str, session_id: str) -> Dict:
     try:
-        with st.spinner("Kiosk is typing..."):
+        with st.spinner("Loading..."):
             time.sleep(0.4)
             payload = {"user_message": user_input, "session_id": session_id}
             resp = requests.post(LLM_URL, json=payload, timeout=30).json()
@@ -422,107 +426,64 @@ def render_route_preview(route: Dict):
         """,
         unsafe_allow_html=True,
     )
-
+    
 # ---------------------------
-# Render chat history (with previews for past assistant turns)
+# TTS UI Helpers
+# ---------------------------
+def speak_text(text, speaker="Shafiqah Idayu"):
+    resp_ms = requests.post("http://localhost:8020/infer", json={
+        "text": text,
+        "speaker": speaker
+    })
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(resp_ms.content)
+        tmp_path = tmp.name
+    return tmp_path
+
+def play_tts(audio_path):
+    winsound.PlaySound(audio_path, winsound.SND_FILENAME)
+    
+# ---------------------------
+# Render chat history FIRST (above the input)
 # ---------------------------
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
-        if msg["role"] == "assistant":
-            # if earlier assistant turns had data, render their previews too
-            tdet = msg.get("ticket_details")
-            rdet = msg.get("route_details")
-            if tdet:
-                render_ticket_preview(tdet)
-            if rdet:
-                render_route_preview(rdet)
-            if msg.get("query_type"):
-                st.caption(f"Query Type: {msg['query_type']}")
-
-
+        if msg["role"] == "assistant" and msg.get("query_type"):
+            st.caption(f"Query Type: {msg['query_type']}")
+            
 # ---------------------------
-# Input box & new turn
+# Sidebar: audio recorder + inspector
 # ---------------------------
-col1, col2 = st.columns([9,1])  # wide text input + small mic button
-
-with col1:
-    user_input = st.chat_input("Type your message here...")
-
-with col2:
-    # Audio recorder button
+with st.sidebar:
+    st.subheader("🎤 Voice Input")
     result = audio_recorder(
         interval=50,
         threshold=-60,
         silenceTimeout=200
     )
+    
+    # Make sure session state is initialized
+    if "transcribed_input" not in st.session_state:
+        st.session_state.transcribed_input = None
 
-# Process recorded audio (transcription will override user_input)
-if result:
-    if result.get('status') == 'stopped':
-        audio_data = result.get('audioData')
-        if audio_data:
-            audio_bytes = base64.b64decode(audio_data)
-
-            st.write("📢 Recorded Audio:")
-            st.audio(io.BytesIO(audio_bytes), format="audio/webm")
-
-            with st.spinner("Processing audio..."):
+    # Handle audio recording
+    if result:
+        if result.get('status') == 'stopped':
+            audio_data = result.get('audioData')
+            if audio_data:
+                audio_bytes = base64.b64decode(audio_data)
                 audio_file = process_audio(audio_bytes)
                 if audio_file:
-                    with st.spinner("Transcribing..."):
-                        asr_result = transcribe_audio(audio_file)
-                        if asr_result:
-                            transcription = asr_result["transcription"]
-                            st.success(f"📝 Transcription: {transcription}")
+                    asr_result = transcribe_audio(audio_file)
+                    if asr_result:
+                        st.session_state.transcribed_input = asr_result["transcription"]
+            else:
+                st.warning("No audio data was recorded")
+        elif result.get('error'):
+            st.error(f"Error: {result.get('error')}")
 
-                            # Use transcription as user_input
-                            user_input = transcription
-        else:
-            st.warning("No audio data was recorded")
-    elif result.get('error'):
-        st.error(f"Error: {result.get('error')}")
-
-# ---------------------------
-# Chat logic
-# ---------------------------
-if user_input:
-    # Show user turn
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    st.chat_message("user").write(user_input)
-
-    # Get AI response
-    ai_reply = get_ai_reply(user_input, st.session_state.session_id)
-    st.session_state.last_ai_reply = ai_reply
-
-    # Store in history
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": ai_reply.get("text", ""),
-        "ticket_details": ai_reply.get("ticket_details", {}),
-        "route_details": ai_reply.get("route_details", {}),
-        "query_type": ai_reply.get("query_type", ""),
-    })
-
-    # Render assistant reply
-    with st.chat_message("assistant"):
-        st.write(ai_reply.get("text", ""))
-
-        if ai_reply.get("ticket_details"):
-            render_ticket_preview(ai_reply["ticket_details"])
-
-        if ai_reply.get("route_details"):
-            render_route_map(ai_reply["route_details"], station_coords, delay=0.3)
-            render_route_preview(ai_reply["route_details"])
-
-        if ai_reply.get("query_type"):
-            st.caption(f"Query Type: {ai_reply['query_type']}")
-
-# ---------------------------
-# Sidebar: Raw JSON inspectors
-# ---------------------------
-with st.sidebar:
-    st.header("ℹ️ Response Inspector")
+    st.subheader("ℹ️ Response Inspector")
     last = st.session_state.last_ai_reply
     if last:
         if last.get("ticket_details"):
@@ -535,3 +496,76 @@ with st.sidebar:
             st.caption(f"Query Type: {last['query_type']}")
     else:
         st.caption("Interact to see raw details here.")
+
+# ---------------------------
+# Chat input at the very bottom (sticky)
+# ---------------------------
+typed_input = st.chat_input("Type your message here...")
+
+user_input = None
+
+# Priority 1: typed input (if you type, it overrides voice)
+if typed_input:
+    user_input = typed_input
+    st.session_state.transcribed_input = None  # clear voice buffer
+
+# Priority 2: voice input (only if nothing typed)
+elif st.session_state.transcribed_input:
+    user_input = st.session_state.transcribed_input
+    st.session_state.transcribed_input = None  # clear after use
+
+# ---------------------------
+# Chat logic - Process new input
+# ---------------------------
+if user_input:
+    # Store assistant response in history (replace old one if any)
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+        st.session_state.messages.pop()  # remove previous assistant msg
+    
+    # Add user message to history
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    st.chat_message("user").write(user_input)
+
+    # Get AI response
+    ai_reply = get_ai_reply(user_input, st.session_state.session_id)
+    st.session_state.last_ai_reply = ai_reply
+
+    # Store assistant response in history
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": ai_reply.get("text", ""),
+        "query_type": ai_reply.get("query_type", ""),
+        "ticket_details": ai_reply.get("ticket_details", ""),
+        "route_details": ai_reply.get("route_details", ""),
+    })
+    
+    with st.chat_message("assistant"):
+        # Always show the text immediately
+        ai_text = ai_reply.get("text", "")
+        
+        if ai_text:
+            # generate audio first
+            with st.spinner("Loading..."):
+                audio_path = speak_text(ai_text)
+            
+            # Create a placeholder for animated text
+            placeholder = st.empty()
+            typed_text = ""
+
+            threading.Thread(target=play_tts, args=(audio_path,), daemon=True).start()
+            for word in ai_text.split():
+                typed_text += word + " "
+                placeholder.markdown(typed_text)
+                time.sleep(0.2)  # typing speed
+                
+        # Show query type if available
+        if ai_reply.get("query_type"):
+            st.caption(f"Query Type: {ai_reply['query_type']}")
+
+        # Handle special assistant message features
+        if ai_reply.get("ticket_details"):
+            render_ticket_preview(ai_reply["ticket_details"])
+
+        if ai_reply.get("route_details"):
+            render_route_map(ai_reply["route_details"], station_coords, delay=0.3)
+            render_route_preview(ai_reply["route_details"])

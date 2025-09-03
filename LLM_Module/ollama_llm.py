@@ -130,7 +130,7 @@ CANCEL_MESSAGES = {
 
 # ticket agent prompt
 ticket_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "interchange_note", "ticket_status", "language"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "ticket_status", "language"],
     template="""
 <|begin_of_text|>
 <|start_header_id|>system<|end_header_id|>
@@ -140,13 +140,14 @@ Kiosk Station: {kiosk_station}
 Conversation so far: {history}
 
 Fare Information: {fare_info}
+Destination Station: {destination}
 Interchange Information: {interchange_note}
 Ticket Status: {ticket_status}
 
 Guidelines:
 1. Use the **Fare Information** and **Interchange Information** above exactly. Do NOT invent, change, or recalculate any fares, station names, or ticket IDs.
 2. If ticket_status is "no":
-   - Mention the ticket details exactly as provided (example: "Your ticket from {kiosk_station} to destination costs {fare_info}.")
+   - Mention the ticket details exactly as provided (example: "Your ticket from {kiosk_station} to {destination} costs {fare_info}.")
    - Politely ask the user if they want to confirm this ticket purchase.
    - If the user declines (says no, cancel, not yet, later, stop, back):
      * Politely acknowledge the cancellation (e.g. "Okay, I’ve cancelled your request.").
@@ -165,16 +166,17 @@ IMPORTANT: Always respond in **{language}** and do NOT change any values shown i
 
 # qna agent prompt
 qna_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "interchange_note", "language"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language"],
     template="""
 You are a multilingual LRT/MRT information assistant.
 Answer user's transport-related questions briefly and politely in **{language}**.
-Use the Fare Info above exactly when referencing fares. Just say "don't know" when no information is available.
+Use the Fare Info and Referred Station below exactly when referencing fares. Just say "don't know" when no information is available.
 
 Current kiosk station: {kiosk_station}
 Conversation so far: {history}
 
 Fare Info: {fare_info}
+Referred Station: {destination}
 Interchange Info: {interchange_note}
 Question: {input}
 """
@@ -225,6 +227,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     history = state.get("history", "")
 
     fare_info = "None"
+    destination = "None"
     interchange_note = "None"
 
     # Case 1: Waiting for confirmation -> handle confirm/cancel
@@ -258,8 +261,9 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         if station:
             fare, _, _ = fare_system.get_fare(station)
             interchange_station = fare_system.find_interchange_station(station)
-            interchange_note = f"Includes interchange at {interchange_station}" if interchange_station else "None"
-            fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else "None"
+            interchange_note = f"Includes interchange at {interchange_station}." if interchange_station else ""
+            fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else ""
+            destination = f"{station}"
             if fare is not None:
                 lock.update({"station": station, "fare": fare, "interchange": interchange_note})
             print(f"[AGENT] session={session_id} locked station candidate set -> {lock}")
@@ -267,6 +271,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             fare_info = "None"
     else:
         fare_info = f"To {lock['station']}: RM{lock['fare']:.2f}"
+        destination = f"{lock['station']}"
         interchange_note = lock["interchange"]
 
     # Case 3: If confirmed -> issue ticket
@@ -274,13 +279,13 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         ticket_id = generate_ticket_id()
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ticket_text_en = (
-            f"Ticket ID {ticket_id} issued on {current_time}, from {kiosk_station} to {lock['station']} "
-            f"with a fare of RM{lock['fare']:.2f}. {lock['interchange']}."
+            f"Your ticket is issued! From {kiosk_station} to {lock['station']} "
+            f"with a fare of RM{lock['fare']:.2f}. {lock['interchange']}"
             f"Please download this PDF ticket, enjoy your journey!"
         )
         ticket_text_ms = (
-            f"ID Tiket {ticket_id} dikeluarkan pada {current_time}, dari {kiosk_station} ke {lock['station']} "
-            f"dengan tambang RM{lock['fare']:.2f}. {lock['interchange']}."
+            f"Tiket anda sudah dikeluarkan. Dari {kiosk_station} ke {lock['station']} "
+            f"dengan tambang RM{lock['fare']:.2f}. {lock['interchange']}"
             f"Sila muat turun tiket PDF ini, selamat menikmati perjalanan anda!"
         )
         ticket_text = ticket_text_en if user_lang != "ms" else ticket_text_ms
@@ -325,6 +330,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         input=user_input,
         kiosk_station=kiosk_station,
         fare_info=fare_info,
+        destination=destination,
         interchange_note=interchange_note,
         ticket_status="no",
         language=lang_instruction
@@ -356,19 +362,22 @@ def qna_agent_node(state: KioskState) -> KioskState:
 
     fare_info = "None"
     interchange_note = "None"
+    destination = "None"
     clean_input = preprocess_for_station_matching(user_input, user_lang)
     station, _, _ = find_station(clean_input)
     if station:
         fare, _, _ = fare_system.get_fare(station)
         interchange_station = fare_system.find_interchange_station(station)
-        interchange_note = f"Includes interchange at {interchange_station}" if interchange_station else "None"
-        fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else "None"
+        interchange_note = f"Includes interchange at {interchange_station}" if interchange_station else ""
+        fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else ""
+        destination = f"{station}"
 
     reply = llm.invoke(qna_prompt.format(
         history=history,
         input=user_input,
         kiosk_station=kiosk_station,
         fare_info=fare_info,
+        destination=destination,
         interchange_note=interchange_note,
         language=lang_instruction
     ))
