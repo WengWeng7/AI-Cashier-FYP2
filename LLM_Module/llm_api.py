@@ -30,9 +30,8 @@ class TicketDetails(BaseModel):
     datetime: str = ""
 
 class RouteDetails(BaseModel):
-    station_line1: List[str] = []
-    station_line2: List[str] = []
-    interchange_station: List[str] = []
+    station_lines: List[List[str]] = []
+    interchanges: List[str] = []
 
 class LLMResponse(BaseModel):
     text: str

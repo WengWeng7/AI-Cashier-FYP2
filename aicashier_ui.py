@@ -212,77 +212,86 @@ def render_ticket_preview(ticket: Dict):
     )
 
 
-def build_route_text(seg1: List[str], seg2: List[str], interchange: List[str]) -> str:
+def build_route_text(station_lines: List[List[str]], interchanges: List[str]) -> str:
     """
-    Builds a fancy arrow route string without duplicating interchange stations.
+    Builds a fancy arrow route string with multiple interchanges.
+    Shows each interchange only once (via ⏩ markers).
     """
     def chain(arr: List[str]) -> str:
         return " ➡️ ".join(arr) if arr else ""
 
     parts = []
-    if seg1:
-        parts.append(chain(seg1))
+    for idx, seg in enumerate(station_lines):
+        if not seg:
+            continue
 
-    if interchange:
-        inter = interchange[0]
+        if idx == 0:
+            # First segment: keep as is
+            parts.append(chain(seg))
+        else:
+            # Interchange station for this transition
+            inter = interchanges[idx-1] if idx-1 < len(interchanges) else None
+            if inter:
+                # Remove interchange from previous segment’s end
+                if parts and parts[-1].endswith(inter):
+                    parts[-1] = parts[-1].rsplit(" ➡️ " + inter, 1)[0]
 
-        # if seg1 ends with interchange, remove duplicate
-        if seg1 and seg1[-1] == inter:
-            parts[-1] = chain(seg1[:-1]) + f" ➡️ {inter}"
+                # Remove interchange from next segment’s start
+                seg = seg[1:] if seg and seg[0] == inter else seg
 
-        # always show interchange marker
-        parts.append(f" ⏩ {inter} ⏩ ")
+                # Insert interchange marker
+                parts.append(f" ⏩ {inter} ⏩ ")
 
-        # if seg2 starts with interchange, skip duplicate
-        if seg2 and seg2[0] == inter:
-            seg2 = seg2[1:]
-
-    if seg2:
-        parts.append(chain(seg2))
+            # Append cleaned segment
+            if seg:
+                parts.append(chain(seg))
 
     return "".join(parts)
 
 
+
 def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], delay: float = 0.8):
-    if not route_details or not route_details.get("station_line1"):
+    """
+    Render the route map for multiple station lines and interchanges.
+    """
+    if not route_details or not route_details.get("station_lines"):
         return
-    seg1 = route_details.get("station_line1", []) or []
-    seg2 = route_details.get("station_line2", []) or []
-    interchange = route_details.get("interchange", []) or []
+    
+    station_lines = route_details.get("station_lines", []) or []
+    interchanges = route_details.get("interchanges", []) or []
 
-    # build full path (avoid repeating interchange if seg2 starts with the same)
-    if seg2 and interchange and seg2[0] == interchange[0]:
-        full_names = seg1 + seg2[1:]  # skip duplicate interchange
-    elif seg2:
-        full_names = seg1 + seg2
-    else:
-        full_names = seg1
+    # Build full ordered list of stations with interchanges in between
+    full_names = []
+    for idx, seg in enumerate(station_lines):
+        if idx > 0 and idx-1 < len(interchanges):
+            inter = interchanges[idx-1]
+            if full_names and full_names[-1] != inter:
+                full_names.append(inter)
+        full_names.extend(seg)
 
-    # fallback: if seg2 empty just use seg1
-    if not seg2:
-        full_names = seg1
-
-    # ensure we have coords for each station; skip stations without coords
+    # Ensure we have coords for each station
     coords = []
     names_with_coords = []
     for name in full_names:
         pt = station_coords.get(name)
         if pt:
-            lat, lon = pt  # station_coords expected (lat, lon)
-            coords.append([lon, lat])  # pydeck wants [lon, lat]
+            lat, lon = pt
+            coords.append([lon, lat])  # pydeck expects [lon, lat]
             names_with_coords.append(name)
         else:
-            st.warning(f"Missing coords for station: {name} — it will be skipped on the map.")
+            st.warning(f"Missing coords for station: {name} — skipped on map.")
     
     if len(coords) < 2:
         st.warning("Not enough station coordinates to draw a route.")
         return
 
-    # DataFrame for station markers (use lon,lat columns for pydeck scatter)
-    df_points = pd.DataFrame([{"station": n, "lat": station_coords[n][0], "lon": station_coords[n][1]}
-                              for n in names_with_coords])
+    # DataFrame for all stations
+    df_points = pd.DataFrame([
+        {"station": n, "lat": station_coords[n][0], "lon": station_coords[n][1]}
+        for n in names_with_coords
+    ])
 
-    # Tile layer: OpenStreetMap tiles (no API key)
+    # Tile layer: OpenStreetMap (no API key)
     tile_layer = pdk.Layer(
         "TileLayer",
         data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -292,7 +301,7 @@ def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], dela
         opacity=1.0
     )
 
-    # Station markers; we will show all at once
+    # Generic station markers
     station_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_points,
@@ -303,30 +312,28 @@ def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], dela
         auto_highlight=True
     )
 
-    # highlight start/end/interchange indices (if available)
-    start_idx = 0
-    end_idx = len(names_with_coords) - 1
-    inter_name = interchange[0] if interchange else None
-
-    # placeholders for custom marker layers (start/end/interchange)
+    # Special markers: start (green), end (red), interchanges (orange)
     special_markers = []
-    # start marker (green)
+
     if names_with_coords:
         sname = names_with_coords[0]
         slat, slon = station_coords[sname]
         special_markers.append({"pos": [slon, slat], "color": [34, 139, 34], "label": "Start", "name": sname})
-    # end marker (red)
-    if names_with_coords:
+
         ename = names_with_coords[-1]
         elat, elon = station_coords[ename]
         special_markers.append({"pos": [elon, elat], "color": [200, 30, 30], "label": "End", "name": ename})
-    # interchange (orange) — if present and has coords
-    if inter_name and inter_name in station_coords:
-        ilat, ilon = station_coords[inter_name]
-        special_markers.append({"pos": [ilon, ilat], "color": [255, 165, 0], "label": "Interchange", "name": inter_name})
 
-    # a scatter layer for special markers
-    special_df = pd.DataFrame([{"lon": m["pos"][0], "lat": m["pos"][1], "color": m["color"], "label": m["label"], "name": m["name"]} for m in special_markers])
+    for inter in interchanges:
+        if inter in station_coords:
+            ilat, ilon = station_coords[inter]
+            special_markers.append({"pos": [ilon, ilat], "color": [255, 165, 0], "label": "Interchange", "name": inter})
+
+    special_df = pd.DataFrame([
+        {"lon": m["pos"][0], "lat": m["pos"][1], "color": m["color"], "label": m["label"], "name": m["name"]}
+        for m in special_markers
+    ])
+
     special_layer = pdk.Layer(
         "ScatterplotLayer",
         data=special_df,
@@ -336,17 +343,15 @@ def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], dela
         pickable=True,
     )
 
-    # progress placeholder
+    # Placeholder for animation
     placeholder = st.empty()
 
-    # initial view centered on first station
+    # Initial view
     view_state = pdk.ViewState(latitude=coords[0][1], longitude=coords[0][0], zoom=11, pitch=0)
 
-    # progressive drawing: each iteration we show the partial path coords[:i+1]
+    # Animate path drawing
     for i in range(1, len(coords)):
-        # path up to i (completed)
-        completed_path = [{"path": coords[:i+1]}]  # one path with coordinates so far
-
+        completed_path = [{"path": coords[:i+1]}]
         completed_layer = pdk.Layer(
             "PathLayer",
             data=completed_path,
@@ -356,31 +361,25 @@ def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], dela
             width_min_pixels=4
         )
 
-        # optionally highlight the "current" segment
-        current_seg = [{"path": coords[max(0, i-1):i+1]}]  # last edge (two points)
+        current_seg = [{"path": coords[max(0, i-1):i+1]}]
         current_layer = pdk.Layer(
             "PathLayer",
             data=current_seg,
             get_path="path",
-            get_color=[255, 165, 0],  # orange for the segment being drawn
+            get_color=[255, 165, 0],  # orange
             width_scale=10,
             width_min_pixels=6
         )
 
-        # assemble layers: tile, completed, current, points, special markers
         deck = pdk.Deck(
             layers=[tile_layer, completed_layer, current_layer, station_layer, special_layer],
             initial_view_state=view_state,
             tooltip={"html": "<b>Station:</b> {station}", "style": {"backgroundColor": "white", "color": "black"}}
         )
-
-        # render into placeholder
         placeholder.pydeck_chart(deck)
-
-        # small pause to animate
         time.sleep(delay)
 
-    # final frame: full route (ensure final line visible)
+    # Final frame
     final_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": coords}],
@@ -398,14 +397,13 @@ def render_route_map(route_details: Dict, station_coords: Dict[str, tuple], dela
 
 
 def render_route_preview(route: Dict):
-    if not route or not route.get("station_line1"):
+    if not route or not route.get("station_lines"):
         return 
     
-    seg1 = route.get("station_line1", []) or []
-    seg2 = route.get("station_line2", []) or []
-    interchange = route.get("interchange_station", []) or []
+    station_lines = route.get("station_lines", []) or []
+    interchanges = route.get("interchanges", []) or []
 
-    route_text = build_route_text(seg1, seg2, interchange)
+    route_text = build_route_text(station_lines, interchanges)
 
     if not route_text:
         st.info("No route segments available.")
@@ -413,13 +411,8 @@ def render_route_preview(route: Dict):
 
     return st.markdown(
         f"""
-        <div style="
-            border:1px dashed #cfd6e4;
-            border-radius:14px;
-            padding:14px 16px;
-            background:#fbfdff;
-            box-shadow:0 2px 10px rgba(0,0,0,0.04);
-            max-width:1050px;">
+        <div style="border:1px dashed #cfd6e4; border-radius:14px; padding:14px 16px;
+                    background:#fbfdff; box-shadow:0 2px 10px rgba(0,0,0,0.04); max-width:1050px;">
             <div style="font-weight:600;margin-bottom:8px;">Route</div>
             <div style="font-size:15px;">{route_text}</div>
         </div>
@@ -519,8 +512,8 @@ elif st.session_state.transcribed_input:
 # ---------------------------
 if user_input:
     # Store assistant response in history (replace old one if any)
-    if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
-        st.session_state.messages.pop()  # remove previous assistant msg
+    #if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+    #    st.session_state.messages.pop()  # remove previous assistant msg
     
     # Add user message to history
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -567,5 +560,5 @@ if user_input:
             render_ticket_preview(ai_reply["ticket_details"])
 
         if ai_reply.get("route_details"):
-            render_route_map(ai_reply["route_details"], station_coords, delay=0.3)
+            render_route_map(ai_reply["route_details"], station_coords, delay=0.2)
             render_route_preview(ai_reply["route_details"])

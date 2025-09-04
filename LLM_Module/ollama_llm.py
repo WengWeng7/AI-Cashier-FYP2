@@ -10,7 +10,7 @@ import datetime
 import random
 import string
 from langdetect import detect
-from station import FareSystem, find_station, plan_route
+from station import FareSystem, find_station, plan_route, lines_data, rules_facilities_kb
 
 # ==== INIT & GLOBALS ====
 kiosk_station = "Kelana Jaya"
@@ -24,8 +24,25 @@ SESSION_LOCKS: dict = {}   # maps session_id -> {"locked": bool, "station": str,
 CONFIRM_TOKENS_EN = {"yes", "yep", "ok", "okay", "confirm", "buy", "sure"}
 CANCEL_TOKENS_EN  = {"no", "nope", "not yet", "later", "cancel", "stop", "back"}
 
-CONFIRM_TOKENS_MS = {"ya", "yao", "ya.", "sah", "betul", "ok", "okey", "oke", "confirm", "boleh", "setuju"}
+CONFIRM_TOKENS_MS = {"ya", "yao", "yeah", "yes", "sah", "betul", "ok", "okey", "oke", "confirm", "boleh", "setuju"}
 CANCEL_TOKENS_MS  = {"tidak", "tak", "batal", "jangan", "nanti", "tidaklah", "stop", "balik"}
+
+all_stations = [station.lower() for line, stations in lines_data.items() for station in stations]
+# Define stopwords
+STOPWORDS_MS = {
+    "saya", "aku", "kami", "anda", "dia",
+    "nak", "mahu", "ingin", "pergi", "ke", "dari", "balik",
+    "turun", "naik", "dengan",
+    "tiket", "harga", "tambang", "stesen", "lrt", "mrt", "monorel", "kereta", "api"
+}
+
+STOPWORDS_EN = {
+    "i", "me", "we", "you", "they",
+    "want", "would", "like", "need",
+    "to", "go", "get", "take", "ride", "travel",
+    "from", "to", "at", "with",
+    "ticket", "fare", "station", "lrt", "mrt", "monorail", "train"
+}
 
 # ==== HELPERS ====
 
@@ -49,54 +66,91 @@ def build_json_response(
             "datetime": ""
         },
         "route_details": route_details or {
-            "station_line1": [],
-            "station_line2": [],
-            "interchange_station": []
+            "station_lines": [],
+            "interchanges": []
         },
         "query_type": query_type
     }
 
 # detect the language of user input
+import re
+from langdetect import detect
+
+import re
+from langdetect import detect
+from station import find_station
+
 def detect_language_safely(text: str) -> str:
     MALAY_HINTS = [
-        r"\bsaya\b", r"\bnak\b", r"\bpergi\b", r"\bdari\b", r"\bke\b",
-        r"\bdengan\b", r"\bkereta\b", r"\bstesen\b", r"\bmrt\b", r"\blrt\b",
-        r"\btidak\b", r"\bya\b", r"\bboleh\b", r"\bdi\b"
+        r"\bsaya\b", r"\baku\b", r"\bnak\b", r"\bmahu\b", r"\bpergi\b",
+        r"\bdari\b", r"\bke\b", r"\bdengan\b", r"\bdi\b",
+        r"\btidak\b", r"\btak\b", r"\bya\b", r"\bboleh\b",
+        r"\bkereta\b", r"\bapi\b", r"\bstesen\b",
+        r"\bmonorel\b", r"\bbas\b", r"\btren\b", r"\bkomuter\b",
+        r"\btiket\b", r"\btambang\b", r"\bharga\b"
     ]
+
     text = text.strip().lower()
-    if re.search(r'[\u4e00-\u9fff]', text):
-        return 'zh'
+    words = text.split()
+
+    # 1) Remove station names
+    filtered_words = []
+    for w in words:
+        station, _, _ = find_station(w)
+        if not station:
+            filtered_words.append(w)
+
+    filtered_text = " ".join(filtered_words)
+
+    # 2) If empty after stripping, fall back to original text
+    if not filtered_text:
+        filtered_text = text  
+
+    # 3) Check Malay-specific hints first
     for pattern in MALAY_HINTS:
-        if re.search(pattern, text):
-            return 'ms'
+        if re.search(pattern, filtered_text):
+            return "ms"
+
+    # 4) Fallback to langdetect
     try:
-        lang = detect(text)
-        if lang in ['en', 'zh-cn', 'zh-tw', 'zh']:
-            return 'zh' if 'zh' in lang else lang
-        elif lang in ['id', 'so', 'ms']:
-            return 'ms'
-        else:
-            return lang
+        lang = detect(filtered_text)
+        if lang in ["id", "so", "ms"]:
+            return "ms"
+        return "en"
     except:
-        return 'en'
+        return "en"
+
+
 
 # process the user input for better extraction station matching
 def preprocess_for_station_matching(text: str, lang: str) -> str:
+    if not text:
+        return ""
+
     text = text.lower()
 
-    if lang == "ms":
-        # Remove common Malay filler words
-        stopwords = ["saya", "nak", "mahu", "ingin", "pergi", "ke", "stesen", "lrt", "mrt", "tiket"]
-        for w in stopwords:
-            text = re.sub(rf"\b{w}\b", "", text)
-    
-    if lang == "en":
-        # Remove common English filler words
-        stopwords = ["i", "want", "to", "go", "get", "ticket", "station", "lrt", "mrt"]
-        for w in stopwords:
-            text = re.sub(rf"\b{w}\b", "", text)
+    # Remove stopwords based on language
+    stopwords = STOPWORDS_MS if lang == "ms" else STOPWORDS_EN
+    for w in stopwords:
+        text = re.sub(rf"\b{w}\b", "", text, flags=re.IGNORECASE)
 
-    return text.strip()
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Tokenize and filter to station-like candidates
+    tokens = text.split()
+    candidates = []
+    for token in tokens:
+        # Keep if token is substring of any station name
+        if any(token in s for s in all_stations):
+            candidates.append(token)
+
+    # If we found candidates, keep only them
+    if candidates:
+        return " ".join(candidates)
+
+    # Otherwise, fallback to cleaned text
+    return text
 
 # generate a random ticket ID
 def generate_ticket_id(length=6):
@@ -105,7 +159,7 @@ def generate_ticket_id(length=6):
 # return a per-session lock dict; create if missing
 def get_session_lock(session_id: str):
     if session_id not in SESSION_LOCKS:
-        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None}
+        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
     return SESSION_LOCKS[session_id]
 
 # language-safe confirmation / cancellation checks
@@ -130,7 +184,7 @@ CANCEL_MESSAGES = {
 
 # ticket agent prompt
 ticket_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "ticket_status", "language"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "time", "ticket_status", "language"],
     template="""
 <|begin_of_text|>
 <|start_header_id|>system<|end_header_id|>
@@ -142,12 +196,13 @@ Conversation so far: {history}
 Fare Information: {fare_info}
 Destination Station: {destination}
 Interchange Information: {interchange_note}
+Estimated Travel Time: {time}
 Ticket Status: {ticket_status}
 
 Guidelines:
 1. Use the **Fare Information** and **Interchange Information** above exactly. Do NOT invent, change, or recalculate any fares, station names, or ticket IDs.
 2. If ticket_status is "no":
-   - Mention the ticket details exactly as provided (example: "Your ticket from {kiosk_station} to {destination} costs {fare_info}.")
+   - Mention the ticket details exactly as provided (example: "Your ticket from {kiosk_station} to {destination} costs {fare_info}. The estimated travel time will be around {time} minutes.")
    - Politely ask the user if they want to confirm this ticket purchase.
    - If the user declines (says no, cancel, not yet, later, stop, back):
      * Politely acknowledge the cancellation (e.g. "Okay, I’ve cancelled your request.").
@@ -166,7 +221,7 @@ IMPORTANT: Always respond in **{language}** and do NOT change any values shown i
 
 # qna agent prompt
 qna_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "stops"],
     template="""
 You are a multilingual LRT/MRT information assistant.
 Answer user's transport-related questions briefly and politely in **{language}**.
@@ -178,6 +233,8 @@ Conversation so far: {history}
 Fare Info: {fare_info}
 Referred Station: {destination}
 Interchange Info: {interchange_note}
+Estimated Travel Time to Referred Station: {time}
+Number of stops to Referred Station: {stops}
 Question: {input}
 """
 )
@@ -207,13 +264,28 @@ def router_node(state: KioskState) -> KioskState:
             print(f"[ROUTER] Routing to: {state['route']} for input: {state['input']} (confirmation/cancellation) session={session_id} lock={lock}")
             return state
 
-    if any(word in text for word in ["path", "route", "how to get", "how do i go to", "directions", "jalan", "cara pergi"]):
+    # === Intent keywords (regex-based) ===
+    ROUTE_KEYWORDS = [
+        r"\bpath\b", r"\broute\b", r"how to get", r"how do i go",
+        r"how can i go", r"best route", r"fastest route", r"directions?", 
+        r"\bjalan\b", r"cara pergi", r"macam mana nak ke", r"\bmap\b",
+        r"bagaimana untuk ke", r"arah?", r"\blaluan\b", r"\bke mana\b"
+    ]
+    TICKET_KEYWORDS = [
+        r"\bbuy\b", r"\bticket\b", r"\btiket\b", r"\bfare\b",
+        r"\bprice\b", r"how much", r"\bi want to go\b",
+        r"\bke\b", r"\bpergi\b", r"berapa tambang", r"harga tiket",
+        r"nak beli", r"saya nak beli tiket"
+    ]
+
+    if any(re.search(pattern, text) for pattern in ROUTE_KEYWORDS):
         state["route"] = "route_planning"
-    elif any(word in text for word in ["buy", "ticket", "fare", "price", "i want to go", "ke", "pergi"]):
+    elif any(re.search(pattern, text) for pattern in TICKET_KEYWORDS):
         state["route"] = "ticket_agent"
     else:
         state["route"] = "qna_agent"
-        print(f"[ROUTER] Routing to: {state['route']} for input: {state['input']} session={session_id}")
+
+    print(f"[ROUTER] Routing to: {state['route']} for input: {state['input']} session={session_id}")
     return state
 
 def ticket_agent_node(state: KioskState) -> KioskState:
@@ -236,7 +308,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             lock["locked"] = True
             print(f"[AGENT] session={session_id} confirmation detected -> locking for station={lock['station']}")
         elif is_cancellation_text(user_input, user_lang):
-            SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None}
+            SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
             reply_text = CANCEL_MESSAGES.get(user_lang, CANCEL_MESSAGES["en"])
             return_data = {
                 "input": user_input,
@@ -260,19 +332,32 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         station, _, _ = find_station(clean_input)
         if station:
             fare, _, _ = fare_system.get_fare(station)
-            interchange_station = fare_system.find_interchange_station(station)
-            interchange_note = f"Includes interchange at {interchange_station}." if interchange_station else ""
-            fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else ""
+            dt = datetime.datetime.now()
+            time, _, = fare_system.estimate_travel_time(station, dt)
+            _, _, _,ordered_inters = plan_route(kiosk_station, station, fare_system)
+            # Build note for LLM
+            if ordered_inters:
+                interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}."
+            else:
+                interchange_note = ""
+            
+            fare_info = f"RM{fare:.2f}" if fare is not None else ""
             destination = f"{station}"
+            time = f"{time} minutes"
             if fare is not None:
-                lock.update({"station": station, "fare": fare, "interchange": interchange_note})
+                lock.update({"station": station, "fare": fare, "interchange": interchange_note, "time": time})
             print(f"[AGENT] session={session_id} locked station candidate set -> {lock}")
         else:
             fare_info = "None"
     else:
-        fare_info = f"To {lock['station']}: RM{lock['fare']:.2f}"
+        fare_info = f"RM{lock['fare']:.2f}"
         destination = f"{lock['station']}"
-        interchange_note = lock["interchange"]
+        time = f"{lock['time']}"
+        # Use stored array from lock
+        if lock["interchange"]:
+            interchange_note = f"Includes interchanges at {', '.join(lock['interchange'])}."
+        else:
+            interchange_note = ""
 
     # Case 3: If confirmed -> issue ticket
     if lock["locked"]:
@@ -280,12 +365,14 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ticket_text_en = (
             f"Your ticket is issued! From {kiosk_station} to {lock['station']} "
-            f"with a fare of RM{lock['fare']:.2f}. {lock['interchange']}"
+            f"with a fare of RM{lock['fare']:.2f}. {lock['interchange']} "
+            f"The estimated time travel is around {lock['time']} minutes. "
             f"Please download this PDF ticket, enjoy your journey!"
         )
         ticket_text_ms = (
             f"Tiket anda sudah dikeluarkan. Dari {kiosk_station} ke {lock['station']} "
-            f"dengan tambang RM{lock['fare']:.2f}. {lock['interchange']}"
+            f"dengan tambang RM{lock['fare']:.2f}. {lock['interchange']} "
+            f"Anggaran masa perjalanan adalah sekitar {lock['time']} minit. "
             f"Sila muat turun tiket PDF ini, selamat menikmati perjalanan anda!"
         )
         ticket_text = ticket_text_en if user_lang != "ms" else ticket_text_ms
@@ -303,7 +390,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         memory.save_context({"input": "[SYSTEM] Transaction Completed"},
                             {"output": f"--- Ticket transaction completed: {ticket_id} ---"})
         memory.clear()
-        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None}
+        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
         print(f"[AGENT] session={session_id} ticket issued -> {ticket_id} for station={lock['station']}")
         
         return_data = {
@@ -332,6 +419,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         fare_info=fare_info,
         destination=destination,
         interchange_note=interchange_note,
+        time=time,
         ticket_status="no",
         language=lang_instruction
     ))
@@ -360,27 +448,49 @@ def qna_agent_node(state: KioskState) -> KioskState:
     lang_instruction = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
 
+    # === STEP 1: Try station/fare-based queries first ===
     fare_info = "None"
     interchange_note = "None"
     destination = "None"
     clean_input = preprocess_for_station_matching(user_input, user_lang)
     station, _, _ = find_station(clean_input)
+    
     if station:
         fare, _, _ = fare_system.get_fare(station)
-        interchange_station = fare_system.find_interchange_station(station)
-        interchange_note = f"Includes interchange at {interchange_station}" if interchange_station else ""
-        fare_info = f"To {station}: RM{fare:.2f}" if fare is not None else ""
+        dt = datetime.datetime.now()
+        time, breakdown, = fare_system.estimate_travel_time(station, dt)
+        stops = breakdown.get("stops", 0)
+        _, _, _,ordered_inters = plan_route(kiosk_station, station, fare_system)
+        # Build note for LLM
+        if ordered_inters:
+            interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}."
+        else:
+            interchange_note = ""
+        fare_info = f"RM{fare:.2f}" if fare is not None else ""
         destination = f"{station}"
-
-    reply = llm.invoke(qna_prompt.format(
-        history=history,
-        input=user_input,
-        kiosk_station=kiosk_station,
-        fare_info=fare_info,
-        destination=destination,
-        interchange_note=interchange_note,
-        language=lang_instruction
-    ))
+        time = f"{time} minutes"
+        
+        # LLM handle queries
+        reply = llm.invoke(qna_prompt.format(
+            history=history,
+            input=user_input,
+            kiosk_station=kiosk_station,
+            fare_info=fare_info,
+            destination=destination,
+            interchange_note=interchange_note,
+            time=time,
+            stops=stops,
+            language=lang_instruction
+        ))
+    
+    else:
+        # === STEP 2: Fall back to knowledge base ===
+        kb_results = rules_facilities_kb.query(user_input, k=2)
+        if kb_results:
+            # Pick best answer (or concatenate top-k answers)
+            reply = kb_results[0]["answer"]
+        else:
+            reply = "Sorry, I couldn't find relevant info."
 
     memory.clear()
     
@@ -415,9 +525,11 @@ def route_planning_node(state: KioskState) -> KioskState:
         reply_en = "I couldn’t find the destination station. Please try again."
         reply_ms = "Saya tidak dapat mencari stesen destinasi. Sila cuba lagi."
         reply_text = reply_en if user_lang != "ms" else reply_ms
-        seg1, seg2, interchange = [], [], None
+        station_lines, interchanges = [], []
     else:
-        route_text_en, route_text_ms, seg1, seg2, interchange = plan_route(kiosk_station, dest_station, fare_system)
+        route_text_en, route_text_ms, station_lines, interchanges = plan_route(
+            kiosk_station, dest_station, fare_system
+        )
         reply_text = route_text_en if user_lang != "ms" else route_text_ms
 
     memory.clear()
@@ -433,9 +545,8 @@ def route_planning_node(state: KioskState) -> KioskState:
             session_id=state["session_id"],
             ticket_details=None,
             route_details={
-                "station_line1": seg1,
-                "station_line2": seg2,
-                "interchange_station": [interchange] if interchange else []
+                "station_lines": station_lines,
+                "interchanges": interchanges
             }
         )
     }
@@ -509,9 +620,8 @@ def run_llm(user_message: str, session_id: str):
         "datetime": ""
     })
     json_data.setdefault("route_details", {
-        "station_line1": [],
-        "station_line2": [],
-        "interchange_station": []
+        "station_lines": [],
+        "interchanges": []
     })
     
     print(f"### DEBUG: Final JSON response={json_data}\n")
