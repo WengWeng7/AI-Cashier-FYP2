@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from ollama_llm import run_llm, kiosk_station
@@ -42,6 +43,15 @@ class LLMResponse(BaseModel):
 class LLMRequest(BaseModel):
     user_message: str
     session_id: str
+
+# === Enable CORS ===
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==== Routes ====
 

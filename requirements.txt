@@ -20,6 +20,5 @@ sentence-transformers
 langdetect
 streamlit-realtime-audio-recorder
 pydub
-winsound
 huggingface_hub
 scipy

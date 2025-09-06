@@ -1,12 +1,22 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
 import io
+from pydub import AudioSegment
 import soundfile as sf
 import torch
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq, pipeline
 
 app = FastAPI(title="ASR API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 pipe = None
 
@@ -33,16 +43,20 @@ async def startup_event():
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
-    if not file.filename.endswith((".wav", ".flac", ".mp3")):
-        raise HTTPException(status_code=400, detail="Invalid audio format. Use WAV, FLAC, or MP3.")
-
-    # Read file into numpy array
     audio_bytes = await file.read()
-    audio_np, samplerate = sf.read(io.BytesIO(audio_bytes))
 
-    # Convert stereo → mono
-    if len(audio_np.shape) > 1:
-        audio_np = np.mean(audio_np, axis=1)
+    # Convert WebM → WAV (always safe regardless of browser)
+    audio_io = io.BytesIO(audio_bytes)
+    audio = AudioSegment.from_file(audio_io, format="webm")
+
+    # Resample → 16k mono WAV
+    audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+
+    wav_io = io.BytesIO()
+    audio.export(wav_io, format="wav")
+    wav_io.seek(0)
+
+    audio_np, samplerate = sf.read(wav_io)
 
     if pipe is None:
         load_model()
