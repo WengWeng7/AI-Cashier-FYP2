@@ -59,11 +59,11 @@ def process_audio(audio_bytes):
         audio = AudioSegment.from_file(audio_io, format="webm")
 
         # Ensure mono + 16kHz for ASR
-        audio = audio.set_channels(1).set_frame_rate(16000)
+        audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
 
         # Save as temporary WAV
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            audio.export(tmp.name, format="wav")
+            audio.export(tmp.name, format="wav",  codec="pcm_s16le")
             return tmp.name
 
     except Exception as e:
@@ -74,7 +74,7 @@ def transcribe_audio(file_path):
     """Send audio file to API for transcription"""
     try:
         with open(file_path, 'rb') as f:
-            response = requests.post(ASR_URL, files={'file': f})
+            response = requests.post(ASR_URL, files={"file": ("speech.wav", f, "audio/wav")})
             
         if response.status_code == 200:
             return response.json()
