@@ -51,31 +51,13 @@ if "last_ai_reply" not in st.session_state:
 # ---------------------------
 # ASR UI Helpers
 # ---------------------------
-def process_audio(audio_bytes):
-    """Convert WebM audio bytes to WAV and save to temp file"""
+
+def transcribe_audio(audio_bytes):
+    """Send raw WebM audio bytes to API for transcription"""
     try:
-        # Decode webm bytes with pydub
-        audio_io = io.BytesIO(audio_bytes)
-        audio = AudioSegment.from_file(audio_io, format="webm")
-
-        # Ensure mono + 16kHz for ASR
-        audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-
-        # Save as temporary WAV
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            audio.export(tmp.name, format="wav",  codec="pcm_s16le")
-            return tmp.name
-
-    except Exception as e:
-        st.error(f"Error processing audio: {str(e)}")
-        return None
-
-def transcribe_audio(file_path):
-    """Send audio file to API for transcription"""
-    try:
-        with open(file_path, 'rb') as f:
-            response = requests.post(ASR_URL, files={"file": ("speech.wav", f, "audio/wav")})
-            
+        files = {"file": ("speech.webm", io.BytesIO(audio_bytes), "audio/webm")}
+        response = requests.post(ASR_URL, files=files)
+        
         if response.status_code == 200:
             return response.json()
         else:
@@ -466,15 +448,14 @@ with st.sidebar:
             audio_data = result.get('audioData')
             if audio_data:
                 audio_bytes = base64.b64decode(audio_data)
-                audio_file = process_audio(audio_bytes)
-                if audio_file:
-                    asr_result = transcribe_audio(audio_file)
-                    if asr_result:
-                        st.session_state.transcribed_input = asr_result["transcription"]
+                asr_result = transcribe_audio(audio_bytes)
+                if asr_result:
+                    st.session_state.transcribed_input = asr_result["transcription"]
             else:
                 st.warning("No audio data was recorded")
         elif result.get('error'):
             st.error(f"Error: {result.get('error')}")
+
 
     st.subheader("ℹ️ Response Inspector")
     last = st.session_state.last_ai_reply

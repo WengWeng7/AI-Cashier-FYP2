@@ -19,7 +19,7 @@ fare_system = FareSystem("Fare.csv", from_station=kiosk_station)
 llm = OllamaLLM(model="llama3:8b")
 memory = ConversationBufferMemory(input_key="input", memory_key="history")
 
-SESSION_LOCKS: dict = {}   # maps session_id -> {"locked": bool, "station": str, "fare": float, "interchange": str}
+SESSION_LOCKS: dict = {}
 
 CONFIRM_TOKENS_EN = {"yes", "yep", "ok", "okay", "confirm", "buy", "sure"}
 CANCEL_TOKENS_EN  = {"no", "nope", "not yet", "later", "cancel", "stop", "back"}
@@ -159,7 +159,7 @@ def generate_ticket_id(length=6):
 # return a per-session lock dict; create if missing
 def get_session_lock(session_id: str):
     if session_id not in SESSION_LOCKS:
-        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
+        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None, "station_lines": [], "ordered_inters": []}
     return SESSION_LOCKS[session_id]
 
 # language-safe confirmation / cancellation checks
@@ -308,7 +308,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             lock["locked"] = True
             print(f"[AGENT] session={session_id} confirmation detected -> locking for station={lock['station']}")
         elif is_cancellation_text(user_input, user_lang):
-            SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
+            SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None, "station_lines": [], "ordered_inters": []}
             reply_text = CANCEL_MESSAGES.get(user_lang, CANCEL_MESSAGES["en"])
             return_data = {
                 "input": user_input,
@@ -334,7 +334,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             fare, _, _ = fare_system.get_fare(station)
             dt = datetime.datetime.now()
             time, _, = fare_system.estimate_travel_time(station, dt)
-            _, _, _,ordered_inters = plan_route(kiosk_station, station, fare_system)
+            _, _, station_lines, ordered_inters = plan_route(kiosk_station, station, fare_system)
             # Build note for LLM
             if ordered_inters:
                 interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}."
@@ -343,9 +343,9 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             
             fare_info = f"RM{fare:.2f}" if fare is not None else ""
             destination = f"{station}"
-            time = f"{time} minutes"
+            time = f"{time}"
             if fare is not None:
-                lock.update({"station": station, "fare": fare, "interchange": interchange_note, "time": time})
+                lock.update({"station": station, "fare": fare, "interchange": interchange_note, "time": time, "station_lines": station_lines, "ordered_inters": ordered_inters})
             print(f"[AGENT] session={session_id} locked station candidate set -> {lock}")
         else:
             fare_info = "None"
@@ -403,7 +403,10 @@ def ticket_agent_node(state: KioskState) -> KioskState:
                 query_type="ticket_agent",
                 session_id=session_id,
                 ticket_details=ticket_details,
-                route_details=None
+                route_details={
+                    "station_lines": lock["station_lines"],
+                    "interchanges": lock["ordered_inters"]
+                }
             )
         }
         
