@@ -196,11 +196,13 @@ def find_station(user_station: str):
     results = station_index.similarity_search_with_score(user_station, k=1)
     if results:
         best_match, score = results[0]
-        return (
-            best_match.metadata["station"],
-            best_match.metadata["line"],
-            best_match.metadata["interchange"]
-        )
+        SIMILARITY_THRESHOLD = 0.75
+        if score >= SIMILARITY_THRESHOLD:
+            return (
+                best_match.metadata["station"],
+                best_match.metadata["line"],
+                best_match.metadata["interchange"]
+            )
 
     return None, None, None
 

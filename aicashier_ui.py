@@ -10,6 +10,7 @@ import time
 import requests
 import io
 import qrcode
+import json
 from typing import Dict, List
 import pydeck as pdk
 import pandas as pd
@@ -18,6 +19,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from station_coords import station_coords
+import streamlit.components.v1 as components
 # --- TTS Dependencies ---
 import winsound
 import threading
@@ -36,13 +38,20 @@ st.title("🚉 AI Ticketing Kiosk Assistant")
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+# Always refresh welcome message from API
+try:
+    resp = requests.get(ROOT_URL).json()
+    welcome_msg = resp.get("message", "Welcome to AI Ticketing Kiosk!")
+except Exception:
+    welcome_msg = "Welcome to AI Ticketing Kiosk!"
+
+# Initialize messages if not exist
 if "messages" not in st.session_state:
-    try:
-        resp = requests.get(ROOT_URL).json()
-        welcome_msg = resp.get("message", "Welcome to AI Ticketing Kiosk!")
-    except Exception:
-        welcome_msg = "Welcome to AI Ticketing Kiosk!"
     st.session_state.messages = [{"role": "assistant", "content": welcome_msg}]
+else:
+    # Update the first assistant message if it's the welcome
+    if st.session_state.messages and st.session_state.messages[0]["role"] == "assistant":
+        st.session_state.messages[0]["content"] = welcome_msg
 
 # maintain last ai reply for sidebar JSON display
 if "last_ai_reply" not in st.session_state:
@@ -52,12 +61,13 @@ if "last_ai_reply" not in st.session_state:
 # ASR UI Helpers
 # ---------------------------
 
-def transcribe_audio(audio_bytes):
+def transcribe_audio(audio_bytes, session_id):
     """Send raw WebM audio bytes to API for transcription"""
     try:
         files = {"file": ("speech.webm", io.BytesIO(audio_bytes), "audio/webm")}
-        response = requests.post(ASR_URL, files=files)
-        
+        data = {"session_id": session_id}
+        response = requests.post(ASR_URL, files=files, data=data)
+
         if response.status_code == 200:
             return response.json()
         else:
@@ -88,71 +98,81 @@ def get_ai_reply(user_input: str, session_id: str) -> Dict:
         }
 
 
-def generate_ticket_pdf(ticket: Dict) -> bytes:
+def generate_ticket_pdf(ticket: dict) -> bytes:
     """
-    Creates a well-sized rectangular ticket on a Letter page and returns PDF bytes.
+    Creates a modern RapidKL-style ticket inspired by train ticket designs.
+    Bold header/footer, clean middle section, QR on left, details on right.
     """
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
     width, height = letter
 
-    # Ticket card dimensions (approx. 160mm x 70mm)
+    # Ticket size
     card_w = 160 * mm
     card_h = 70 * mm
     margin_x = (width - card_w) / 2
     margin_y = height - (card_h + 60)
 
-    # Draw card background
+    # Background
     c.setFillColor(colors.whitesmoke)
-    c.roundRect(margin_x, margin_y, card_w, card_h, 8 * mm, fill=1, stroke=0)
+    c.roundRect(margin_x, margin_y, card_w, card_h, 4 * mm, fill=1, stroke=0)
 
-    # Border
-    c.setLineWidth(1)
-    c.setStrokeColor(colors.grey)
-    c.roundRect(margin_x, margin_y, card_w, card_h, 8 * mm, fill=0, stroke=1)
+    # Top header (red band)
+    c.setFillColorRGB(0.85, 0.0, 0.0)  # RapidKL red
+    c.rect(margin_x, margin_y + card_h - 15 * mm, card_w, 15 * mm, fill=1, stroke=0)
+    c.setFont("Helvetica-Bold", 14)
+    c.setFillColor(colors.white)
+    c.drawString(margin_x + 8 * mm, margin_y + card_h - 8 * mm, "RapidKL Ticket")
 
-    # Header bar
-    c.setFillColor(colors.lightblue)
-    c.roundRect(margin_x, margin_y + card_h - 18 * mm, card_w, 18 * mm, 8 * mm, fill=1, stroke=0)
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(margin_x + 12 * mm, margin_y + card_h - 12 * mm, "RapidKL AI Assistant Ticket")
+    # Footer (blue band) → reduced height for more breathing space
+    footer_h = 6 * mm
+    c.setFillColorRGB(0.0, 0.3, 0.7)  # RapidKL blue
+    c.rect(margin_x, margin_y, card_w, footer_h, fill=1, stroke=0)
+    c.setFont("Helvetica-Oblique", 9)
+    c.setFillColor(colors.white)
+    c.drawRightString(margin_x + card_w - 6 * mm, margin_y + (footer_h/2) - 3, "Enjoy your journey with RapidKL!")
 
-    # Ticket fields
-    c.setFont("Helvetica-Bold", 12)
-    y = margin_y + card_h - 26 * mm
+    # QR Code (left side)
+    qr_data = json.dumps(ticket, ensure_ascii=False)
+    qr_img = qrcode.make(qr_data)
+    qr_size = 38 * mm
+    qr_x = margin_x + 8 * mm
+    qr_y = margin_y + (card_h - qr_size) / 2 - 2  # nudged slightly to center better
+    c.drawInlineImage(qr_img, qr_x, qr_y, qr_size, qr_size)
+
+    # Ticket info (right side)
+    info_x = qr_x + qr_size + 15
+    y = margin_y + card_h - 20 * mm
     line_gap = 7 * mm
 
-    def field(label, value):
+    def field(label, value, bold=False):
         nonlocal y
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(margin_x + 12 * mm, y, f"{label}:")
-        c.setFont("Helvetica", 11)
-        c.drawString(margin_x + 45 * mm, y, str(value or "-"))
+        display_value = value if value else "-"  # fallback dash
+        if bold:
+            c.setFont("Helvetica-Bold", 12)
+        else:
+            c.setFont("Helvetica", 10)
+        c.setFillColor(colors.black)
+        c.drawString(info_x, y, f"{label}: {display_value}")
         y -= line_gap
 
-    field("Ticket ID", ticket.get("ticket_id", ""))
-    field("Session ID", ticket.get("session_id", ""))
-    field("From", ticket.get("from_station", ""))
-    field("To", ticket.get("to_station", ""))
+    # Fields layout
+    field("Ticket ID", ticket.get("ticket_id", ""), bold=True)
+    field("From", ticket.get("from_station", ""), bold=True)
+    field("To", ticket.get("to_station", ""), bold=True)
     field("Fare", ticket.get("fare", ""))
+    field("Session ID", ticket.get("session_id", ""))
     field("Interchange", ticket.get("interchange", ""))
     field("Date/Time", ticket.get("datetime", ""))
-
-    # Footer note
-    c.setFont("Helvetica-Oblique", 9)
-    c.setFillColor(colors.grey)
-    c.drawRightString(margin_x + card_w - 10 * mm, margin_y + 6 * mm, "Enjoy your journey!")
 
     c.showPage()
     c.save()
     buf.seek(0)
     return buf.read()
 
-
 def render_ticket_preview(ticket: Dict):
     if not ticket or not ticket.get("ticket_id"):
-        return  
+        return
 
     st.markdown("#### 🎟 Ticket Preview")
     st.markdown(
@@ -180,18 +200,52 @@ def render_ticket_preview(ticket: Dict):
         """,
         unsafe_allow_html=True,
     )
-    
-    # Generate PDF bytes
+
     pdf_bytes = generate_ticket_pdf(ticket)
-    
+
+    # --- Callback that resets session state server-side immediately on click ---
+    def _on_ticket_download():
+        # Set a friendly welcome message back into messages so the UI shows fresh greeting after reload
+        st.session_state["messages"] = [{"role": "assistant", "content": welcome_msg}]
+        st.session_state["session_id"] = str(uuid.uuid4())
+        st.session_state["last_ai_reply"] = None
+        st.session_state["transcribed_input"] = None
+        # A server-side flag we use to inject the client reload JS (will be cleared immediately below to avoid loops)
+        st.session_state["reset_after_download"] = True
+
+    # Use on_click so server state is updated atomically when user clicks the download button
+    download_key = f"download_{ticket.get('ticket_id')}"
     st.download_button(
         "⬇️ Download PDF Ticket",
         data=pdf_bytes,
         file_name=f"ticket_{ticket.get('ticket_id', uuid.uuid4())}.pdf",
         mime="application/pdf",
-        key=f"download_{ticket.get('ticket_id', uuid.uuid4())}",
+        key=download_key,
+        on_click=_on_ticket_download,
         use_container_width=True,
     )
+
+    # If the on_click set the reset flag, inject JS to reload after a short delay.
+    # Important: we clear the flag server-side BEFORE emitting the JS to avoid an infinite reload loop.
+    if st.session_state.get("reset_after_download"):
+        # prevent repeating the reload
+        st.session_state["reset_after_download"] = False
+
+        # Optional user feedback
+        st.success("✅ Ticket download triggered. Starting a new session...")
+
+        # Small delay (milliseconds) to let the browser start the download before reloading.
+        # Adjust 700-1200 ms if you see download cancellations in tests.
+        js = """
+        <script>
+        // Allow browser ~0.9s to initiate the file download, then reload the page.
+        setTimeout(function(){
+            window.location.reload();
+        }, 900);
+        </script>
+        """
+        # height must be > 0; we use 1 to keep it invisible.
+        components.html(js, height=1)
 
 
 def build_route_text(station_lines: List[List[str]], interchanges: List[str]) -> str:
@@ -448,15 +502,57 @@ with st.sidebar:
             audio_data = result.get('audioData')
             if audio_data:
                 audio_bytes = base64.b64decode(audio_data)
-                asr_result = transcribe_audio(audio_bytes)
+                asr_result = transcribe_audio(audio_bytes, session_id=st.session_state.session_id)
                 if asr_result:
                     st.session_state.transcribed_input = asr_result["transcription"]
             else:
                 st.warning("No audio data was recorded")
         elif result.get('error'):
             st.error(f"Error: {result.get('error')}")
+            
+    st.subheader("🚉 Set Current Kiosk Station")
 
+    # --- Fetch lines_data only once ---
+    if "lines_data" not in st.session_state:
+        try:
+            resp = requests.get(f"{ROOT_URL}lines_data", timeout=10)
+            if resp.status_code == 200:
+                st.session_state.lines_data = resp.json().get("lines_data", {})
+            else:
+                st.error(f"Failed to fetch station data: {resp.text}")
+                st.session_state.lines_data = {}
+        except Exception as e:
+            st.error(f"Error fetching lines_data: {e}")
+            st.session_state.lines_data = {}
 
+    lines_data = st.session_state.lines_data
+
+    # Build layered dropdowns if data available
+    if lines_data:
+        for line_name, stations in lines_data.items():
+            with st.expander(line_name, expanded=False):
+                station_choice = st.radio(
+                    f"Choose station for {line_name}",
+                    stations,
+                    key=f"{line_name}_radio"
+                )
+                if st.button(f"Set kiosk to {station_choice}", key=f"{line_name}_btn"):
+                    try:
+                        resp = requests.post(
+                            f"{ROOT_URL}set_station",
+                            json={"station_name": station_choice},
+                            timeout=10
+                        )
+                        if resp.status_code == 200:
+                            st.success(f"Kiosk station updated to {station_choice}")
+                            st.rerun()  # Refresh to show updated station
+                        else:
+                            st.error(f"Error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Could not update station: {e}")
+    else:
+        st.warning("No station data available.")
+        
     st.subheader("ℹ️ Response Inspector")
     last = st.session_state.last_ai_reply
     if last:

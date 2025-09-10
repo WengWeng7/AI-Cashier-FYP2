@@ -1,3 +1,9 @@
 venv*/
 env*/
 __pycache__/
+LLM_Module/__pycache__/
+TTS_Module/__pycache__/
+ASR_Module/__pycache__/
+ASR_Module/text/
+ASR_Module/wav
+ASR_Module/metadata.csv

@@ -128,22 +128,20 @@ def preprocess_for_station_matching(text: str, lang: str) -> str:
         return ""
 
     text = text.lower()
+    tokens = text.split()
 
-    # Remove stopwords based on language
+    # Only remove stopwords if at least 2 tokens remain after removal
     stopwords = STOPWORDS_MS if lang == "ms" else STOPWORDS_EN
-    for w in stopwords:
-        text = re.sub(rf"\b{w}\b", "", text, flags=re.IGNORECASE)
+    filtered_tokens = [t for t in tokens if t not in stopwords]
+    if len(filtered_tokens) >= 2:
+        tokens = filtered_tokens
 
     # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip()
+    text = " ".join(tokens).strip()
 
-    # Tokenize and filter to station-like candidates
-    tokens = text.split()
-    candidates = []
-    for token in tokens:
-        # Keep if token is substring of any station name
-        if any(token in s for s in all_stations):
-            candidates.append(token)
+    # Tokenize and filter to station-like candidates (full word match only)
+    station_names_lower = [s.lower() for s in all_stations]
+    candidates = [token for token in tokens if token in station_names_lower]
 
     # If we found candidates, keep only them
     if candidates:
@@ -221,19 +219,21 @@ IMPORTANT: Always respond in **{language}** and do NOT change any values shown i
 
 # qna agent prompt
 qna_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "stops"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "line" "stops"],
     template="""
 You are a multilingual LRT/MRT information assistant.
 Answer user's transport-related questions briefly and politely in **{language}**.
 Use the Fare Info and Referred Station below exactly when referencing fares. Just say "don't know" when no information is available.
+If the question is related to KLIA Ekspres/Transit, mention that the service departs from KL Sentral or Putrajaya Sentral respectively.
 
 Current kiosk station: {kiosk_station}
 Conversation so far: {history}
 
 Fare Info: {fare_info}
 Referred Station: {destination}
+Referred Station Line: {line}
 Interchange Info: {interchange_note}
-Estimated Travel Time to Referred Station: {time}
+Estimated Travel Time to Referred Station: {time} minutes
 Number of stops to Referred Station: {stops}
 Question: {input}
 """
@@ -329,7 +329,9 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     # Case 2: Detect new station if none locked
     if lock["station"] is None:
         clean_input = preprocess_for_station_matching(user_input, user_lang)
+        print(f"[AGENT] Cleaned input for station matching: {repr(clean_input)}")
         station, _, _ = find_station(clean_input)
+        print(f"[AGENT] Extracted station: {station}")
         if station:
             fare, _, _ = fare_system.get_fare(station)
             dt = datetime.datetime.now()
@@ -386,11 +388,16 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             "interchange": lock["interchange"],
             "datetime": current_time
         }
+        
+        route_details = {
+            "station_lines": lock["station_lines"],
+            "interchanges": lock["ordered_inters"]
+        }
 
         memory.save_context({"input": "[SYSTEM] Transaction Completed"},
                             {"output": f"--- Ticket transaction completed: {ticket_id} ---"})
         memory.clear()
-        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None}
+        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None, "station_lines": [], "ordered_inters": []}
         print(f"[AGENT] session={session_id} ticket issued -> {ticket_id} for station={lock['station']}")
         
         return_data = {
@@ -403,10 +410,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
                 query_type="ticket_agent",
                 session_id=session_id,
                 ticket_details=ticket_details,
-                route_details={
-                    "station_lines": lock["station_lines"],
-                    "interchanges": lock["ordered_inters"]
-                }
+                route_details=route_details
             )
         }
         
@@ -456,7 +460,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
     interchange_note = "None"
     destination = "None"
     clean_input = preprocess_for_station_matching(user_input, user_lang)
-    station, _, _ = find_station(clean_input)
+    station, line, _ = find_station(clean_input)
     
     if station:
         fare, _, _ = fare_system.get_fare(station)
@@ -471,7 +475,8 @@ def qna_agent_node(state: KioskState) -> KioskState:
             interchange_note = ""
         fare_info = f"RM{fare:.2f}" if fare is not None else ""
         destination = f"{station}"
-        time = f"{time} minutes"
+        station_line = f"{line}"
+        time = f"{time}"
         
         # LLM handle queries
         reply = llm.invoke(qna_prompt.format(
@@ -483,6 +488,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
             interchange_note=interchange_note,
             time=time,
             stops=stops,
+            line=station_line,
             language=lang_instruction
         ))
     

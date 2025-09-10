@@ -25,7 +25,7 @@ station_coords = {
     "Phileo Damansara":(3.129286, 101.642892),"Pusat Bandar Damansara":(3.143411, 101.662242),
     "Semantan":(3.15107, 101.665312),"Muzium Negara":(3.137317, 101.687336),
     "Pasar Seni":(3.1425, 101.695278),"Merdeka":(3.141969, 101.70205),
-    "Bukit Bintang":(3.146503, 101.710947),"Tun Razak Exchange (TRX)":(3.142403, 101.720156),
+    "Bukit Bintang":(3.146503, 101.710947),"Tun Razak Exchange":(3.142403, 101.720156),
     "Cochrane":(3.1328, 101.72309),"Maluri":(3.123261, 101.726961),
     "Taman Pertama":(3.112739, 101.729289),"Taman Midah":(3.1045, 101.732194),
     "Taman Mutiara":(3.0918, 101.74003),"Taman Connaught":(3.07925, 101.7451),
