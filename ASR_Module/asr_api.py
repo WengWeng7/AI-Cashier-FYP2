@@ -9,6 +9,7 @@ import torch
 import os
 import csv
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq, pipeline
+from transformers.models.whisper import tokenization_whisper
 
 app = FastAPI(title="ASR API")
 
@@ -25,7 +26,7 @@ pipe = None
 os.makedirs("wav", exist_ok=True)
 os.makedirs("text", exist_ok=True)
 
-def load_model(model_name="mesolitica/malaysian-whisper-tiny"):
+def load_model(model_name="mesolitica/malaysian-whisper-small-v2", return_timestamps=False):
     global pipe
     if pipe is None:
         print("🔄 Loading ASR model...")
@@ -36,7 +37,7 @@ def load_model(model_name="mesolitica/malaysian-whisper-tiny"):
             model=model,
             tokenizer=processor.tokenizer,
             feature_extractor=processor.feature_extractor,
-            return_timestamps=False,
+            return_timestamps=return_timestamps,
             device=0 if torch.cuda.is_available() else -1,
         )
         print("✅ Model loaded.")
@@ -44,7 +45,7 @@ def load_model(model_name="mesolitica/malaysian-whisper-tiny"):
 
 @app.on_event("startup")
 async def startup_event():
-    load_model()
+    load_model(return_timestamps=False)
 
 # Transcription metadata helper
 def get_next_index(session_id: str) -> int:
@@ -86,7 +87,11 @@ async def transcribe(file: UploadFile = File(...), session_id: str = Form(...)):
     if pipe is None:
         load_model()
 
-    result = pipe({"array": audio_np, "sampling_rate": samplerate})
+    # 🔑 Force "transcribe" every time
+    result = pipe(
+        {"array": audio_np, "sampling_rate": samplerate},
+        generate_kwargs={"task": "transcribe"}
+    )
     transcription = result["text"]
     
     # Determine sequence number for this session

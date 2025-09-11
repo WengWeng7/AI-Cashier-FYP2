@@ -9,11 +9,11 @@ import re
 import datetime
 import random
 import string
-from langdetect import detect
 from station import FareSystem, find_station, plan_route, lines_data, rules_facilities_kb
 
 # ==== INIT & GLOBALS ====
 kiosk_station = "Kelana Jaya"
+lang_instruction = "en" #en (English) or ms (Malay)
 fare_system = FareSystem("Fare.csv", from_station=kiosk_station)
 
 llm = OllamaLLM(model="llama3:8b")
@@ -71,55 +71,6 @@ def build_json_response(
         },
         "query_type": query_type
     }
-
-# detect the language of user input
-import re
-from langdetect import detect
-
-import re
-from langdetect import detect
-from station import find_station
-
-def detect_language_safely(text: str) -> str:
-    MALAY_HINTS = [
-        r"\bsaya\b", r"\baku\b", r"\bnak\b", r"\bmahu\b", r"\bpergi\b",
-        r"\bdari\b", r"\bke\b", r"\bdengan\b", r"\bdi\b",
-        r"\btidak\b", r"\btak\b", r"\bya\b", r"\bboleh\b",
-        r"\bkereta\b", r"\bapi\b", r"\bstesen\b",
-        r"\bmonorel\b", r"\bbas\b", r"\btren\b", r"\bkomuter\b",
-        r"\btiket\b", r"\btambang\b", r"\bharga\b"
-    ]
-
-    text = text.strip().lower()
-    words = text.split()
-
-    # 1) Remove station names
-    filtered_words = []
-    for w in words:
-        station, _, _ = find_station(w)
-        if not station:
-            filtered_words.append(w)
-
-    filtered_text = " ".join(filtered_words)
-
-    # 2) If empty after stripping, fall back to original text
-    if not filtered_text:
-        filtered_text = text  
-
-    # 3) Check Malay-specific hints first
-    for pattern in MALAY_HINTS:
-        if re.search(pattern, filtered_text):
-            return "ms"
-
-    # 4) Fallback to langdetect
-    try:
-        lang = detect(filtered_text)
-        if lang in ["id", "so", "ms"]:
-            return "ms"
-        return "en"
-    except:
-        return "en"
-
 
 
 # process the user input for better extraction station matching
@@ -186,7 +137,7 @@ ticket_prompt = PromptTemplate(
     template="""
 <|begin_of_text|>
 <|start_header_id|>system<|end_header_id|>
-You are a multilingual LRT/MRT ticketing assistant.
+You are RapidKL Transit AI assistant.
 
 Kiosk Station: {kiosk_station}
 Conversation so far: {history}
@@ -208,7 +159,7 @@ Guidelines:
    - Do NOT create ticket IDs or make irreversible actions (the system will handle the actual ticket creation).
    - Only acknowledge: e.g., "Okay, generating your ticket now...".
 4. Keep responses short, polite, and always in the user’s language.
-IMPORTANT: Always respond in **{language}** and do NOT change any values shown in Fare Information or Interchange Information.
+IMPORTANT: Always respond in **{language}** only and do NOT translate to other languages.
 <|eot_id|>
 <|start_header_id|>user<|end_header_id|>
 {input}
@@ -219,10 +170,10 @@ IMPORTANT: Always respond in **{language}** and do NOT change any values shown i
 
 # qna agent prompt
 qna_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "line" "stops"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "line", "stops"],
     template="""
-You are a multilingual LRT/MRT information assistant.
-Answer user's transport-related questions briefly and politely in **{language}**.
+You are RapidKL Transit AI assistant.
+Answer user's transport-related questions briefly and politely in **{language}**. Do not translate to other languages.
 Use the Fare Info and Referred Station below exactly when referencing fares. Just say "don't know" when no information is available.
 If the question is related to KLIA Ekspres/Transit, mention that the service departs from KL Sentral or Putrajaya Sentral respectively.
 
@@ -254,8 +205,7 @@ def router_node(state: KioskState) -> KioskState:
     session_id = state.get("session_id", "default")
     lock = get_session_lock(session_id)
 
-    # language used for confirmation/cancel detection (based on current message)
-    user_lang = detect_language_safely(state["input"])
+    user_lang = lang_instruction
 
     # If ticket flow already started (station locked) → confirmation/cancellation handled by ticket_agent
     if lock["station"] is not None:
@@ -294,8 +244,8 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     lock = get_session_lock(session_id)
 
     user_input = state["input"]
-    user_lang = detect_language_safely(user_input)
-    lang_instruction = "Malay" if user_lang == "ms" else "English"
+    user_lang = lang_instruction
+    language = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
 
     fare_info = "None"
@@ -428,9 +378,9 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         interchange_note=interchange_note,
         time=time,
         ticket_status="no",
-        language=lang_instruction
+        language=language
     ))
-    print(f"[AGENT] session={session_id} sent confirm prompt (language={lang_instruction}) lock={lock}")
+    print(f"[AGENT] session={session_id} sent confirm prompt (language={language}) lock={lock}")
 
     return_data = {
         "input": user_input,
@@ -451,8 +401,8 @@ def ticket_agent_node(state: KioskState) -> KioskState:
 def qna_agent_node(state: KioskState) -> KioskState:
     print(f"[AGENT] Running qna_agent_node for: {state['input']}")
     user_input = state["input"]
-    user_lang = detect_language_safely(user_input)
-    lang_instruction = "Malay" if user_lang == "ms" else "English"
+    user_lang = lang_instruction
+    language = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
 
     # === STEP 1: Try station/fare-based queries first ===
@@ -489,7 +439,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
             time=time,
             stops=stops,
             line=station_line,
-            language=lang_instruction
+            language=language
         ))
     
     else:
@@ -524,7 +474,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
 def route_planning_node(state: KioskState) -> KioskState:
     print(f"[AGENT] Running route_planning_node for: {state['input']}")
     user_input = state["input"]
-    user_lang = detect_language_safely(user_input)
+    user_lang = lang_instruction
     history = state.get("history", "")
     
     clean_input = preprocess_for_station_matching(user_input, user_lang)

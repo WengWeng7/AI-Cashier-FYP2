@@ -12,14 +12,12 @@ def generate_ticket_pdf(ticket: dict) -> bytes:
     Bold header/footer, clean middle section, QR on left, details on right.
     """
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    width, height = letter
-
-    # Ticket size
     card_w = 160 * mm
     card_h = 70 * mm
-    margin_x = (width - card_w) / 2
-    margin_y = height - (card_h + 60)
+    c = canvas.Canvas(buf, pagesize=(card_w, card_h))
+    width, height = card_w, card_h
+    margin_x = 0
+    margin_y = 0
 
     # Background
     c.setFillColor(colors.whitesmoke)

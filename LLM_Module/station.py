@@ -355,7 +355,7 @@ class FareSystem:
         # Interchange walking time
         walks = interchanges_count * interchange_walk_min
 
-        total = round(in_train + waits + walks, 1)
+        total = round(in_train + waits + walks)
         breakdown = {
             "stops": hops,
             "boardings": boardings,

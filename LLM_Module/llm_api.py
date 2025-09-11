@@ -5,7 +5,7 @@ import asyncio
 import io
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-from ollama_llm import run_llm, kiosk_station, fare_system, FareSystem
+from ollama_llm import run_llm, kiosk_station, fare_system, FareSystem, lang_instruction
 import ollama_llm
 from llm_ui_helpers import generate_ticket_pdf
 from station import lines_data
@@ -43,6 +43,9 @@ class LLMRequest(BaseModel):
     
 class StationUpdateRequest(BaseModel):
     station_name: str
+    
+class LanguageUpdateRequest(BaseModel):
+    language: str
 
 # === Enable CORS ===
 app.add_middleware(
@@ -91,6 +94,15 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"current_station": current_station})
             last_station = current_station
         await asyncio.sleep(1)  # Check every second
+        
+@app.post("/set_language")
+def set_language(req: LanguageUpdateRequest):
+    global lang_instruction
+    if req.language in ["en", "ms"]:
+        ollama_llm.lang_instruction = req.language
+        return {"message": f"Language updated to {ollama_llm.lang_instruction}"}
+    else:
+        return {"error": "Invalid language. Use 'en' or 'ms'."}
 
 @app.post("/set_station")
 def set_station(req: StationUpdateRequest):
