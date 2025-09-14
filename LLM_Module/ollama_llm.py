@@ -127,50 +127,51 @@ def is_cancellation_text(text: str, lang: str = "en") -> bool:
     return bool(tset & CANCEL_TOKENS_EN)
 
 CANCEL_MESSAGES = {
-    "en": "Okay, I cancelled your ticket request.",
-    "ms": "Baik, saya batalkan permintaan tiket anda."
+    "en": "Okay, please let me know if you need anything else.",
+    "ms": "Baik, sila beritahu saya jika anda memerlukan apa-apa lagi."
 }
 
-# ticket agent prompt
 ticket_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "time", "ticket_status", "language"],
+    input_variables=[
+        "history", "input", "kiosk_station", "fare_info",
+        "destination", "interchange_note", "time",
+        "ticket_status", "language", "input_contains_exact_station"
+    ],
     template="""
-<|begin_of_text|>
-<|start_header_id|>system<|end_header_id|>
 You are RapidKL Transit AI assistant.
 
 Kiosk Station: {kiosk_station}
 Conversation so far: {history}
 
 Fare Information: {fare_info}
-Destination Station: {destination}
+Destination Candidate: {destination}
 Interchange Information: {interchange_note}
 Estimated Travel Time: {time}
 Ticket Status: {ticket_status}
+Input Contains Exact Station: {input_contains_exact_station}
 
 Guidelines:
-1. Use the **Fare Information** and **Interchange Information** above exactly. Do NOT invent, change, or recalculate any fares, station names, or ticket IDs.
-2. If ticket_status is "no":
-   - Mention the ticket details exactly as provided (example: "Your ticket from {kiosk_station} to {destination} costs {fare_info}. The estimated travel time will be around {time} minutes.")
-   - Politely ask the user if they want to confirm this ticket purchase.
-   - If the user declines (says no, cancel, not yet, later, stop, back):
-     * Politely acknowledge the cancellation (e.g. "Okay, I’ve cancelled your request.").
-3. If ticket_status is "yes":
-   - Do NOT create ticket IDs or make irreversible actions (the system will handle the actual ticket creation).
-   - Only acknowledge: e.g., "Okay, generating your ticket now...".
-4. Keep responses short, polite, and always in the user’s language.
-IMPORTANT: Always respond in **{language}** only and do NOT translate to other languages.
-<|eot_id|>
-<|start_header_id|>user<|end_header_id|>
-{input}
-<|eot_id|>
-<|start_header_id|>assistant<|end_header_id|>
+1. Always use the **Fare Information**, **Destination Station**, and **Interchange Information** exactly as provided. Do NOT invent, modify, or guess new stations, fares, or times.
+2. If ticket_status is "candidate" AND the station is only a candidate (not yet locked):
+    - If Input Contains Exact Station is "False": Say: "The station is not recognized in the system. Do you mean: {destination}?"
+    - Say: "I found a possible match: {destination}. It costs RM{fare_info}. Do you mean this station? Yes or No?"  
+    - If user says "yes" → confirm and lock the destination, then move to Purchase Confirmation Phase.  
+    - If user says "no" → politely cancel the request.  
+3. If ticket_status is "yes":  
+    - Assume the ticket purchase is confirmed.  
+    - Only say: "Okay, generating your ticket now..."  
+    - Do NOT issue or create ticket IDs yourself (the backend will handle it).
+4. Keep responses short, polite, and always in the user’s language.  
+5. IMPORTANT: Always respond in **{language}** only and do NOT switch to other languages.
+
+Question: {input}
 """
 )
 
+
 # qna agent prompt
 qna_prompt = PromptTemplate(
-    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "line", "stops"],
+    input_variables=["history", "input", "kiosk_station", "fare_info", "destination", "interchange_note", "language", "time", "line", "stops", "available_stations"],
     template="""
 You are RapidKL Transit AI assistant.
 Answer user's transport-related questions briefly and politely in **{language}**. Do not translate to other languages.
@@ -186,6 +187,7 @@ Referred Station Line: {line}
 Interchange Info: {interchange_note}
 Estimated Travel Time to Referred Station: {time} minutes
 Number of stops to Referred Station: {stops}
+Available Stations: {available_stations}
 Question: {input}
 """
 )
@@ -208,7 +210,7 @@ def router_node(state: KioskState) -> KioskState:
     user_lang = lang_instruction
 
     # If ticket flow already started (station locked) → confirmation/cancellation handled by ticket_agent
-    if lock["station"] is not None:
+    if lock["station"] or lock.get("candidate_station"):
         if is_confirmation_text(text, user_lang) or is_cancellation_text(text, user_lang):
             state["route"] = "ticket_agent"
             print(f"[ROUTER] Routing to: {state['route']} for input: {state['input']} (confirmation/cancellation) session={session_id} lock={lock}")
@@ -247,20 +249,34 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     user_lang = lang_instruction
     language = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
+    available_stations = all_stations
+    input_contains_exact_station = any(station in user_input for station in available_stations)
 
     fare_info = "None"
     destination = "None"
     interchange_note = "None"
+    time = ""
+    ticket_status = "no"
 
-    # Case 1: Waiting for confirmation -> handle confirm/cancel
-    if lock["station"] is not None and not lock["locked"]:
+    # -------------------------------
+    # Case 1: Handle confirmation / cancellation for candidate station
+    # -------------------------------
+    if lock.get("candidate_station") and not lock.get("locked", False):
         if is_confirmation_text(user_input, user_lang):
+            # Promote candidate -> confirmed station
+            lock["station"] = lock["candidate_station"]
             lock["locked"] = True
-            print(f"[AGENT] session={session_id} confirmation detected -> locking for station={lock['station']}")
+            lock.pop("candidate_station", None)
+            print(f"[AGENT] session={session_id} confirmation detected -> locking station={lock['station']}")
         elif is_cancellation_text(user_input, user_lang):
-            SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None, "station_lines": [], "ordered_inters": []}
+            # Reset everything
+            SESSION_LOCKS[session_id] = {
+                "locked": False, "station": None, "candidate_station": None,
+                "fare": None, "interchange": None, "time": None,
+                "station_lines": [], "ordered_inters": []
+            }
             reply_text = CANCEL_MESSAGES.get(user_lang, CANCEL_MESSAGES["en"])
-            return_data = {
+            return {
                 "input": user_input,
                 "history": history,
                 "output": reply_text,
@@ -268,57 +284,74 @@ def ticket_agent_node(state: KioskState) -> KioskState:
                 "json": build_json_response(
                     text=reply_text,
                     query_type="ticket_agent",
-                    session_id=session_id,
-                    ticket_details=None,
-                    route_details=None
+                    session_id=session_id
                 )
             }
-            print(f"### DEBUG [ticket_agent_node] Returning={return_data}")
-            return return_data
+        else:
+            clean_input = preprocess_for_station_matching(user_input, user_lang)
+            station, _, _ = find_station(clean_input)
 
-    # Case 2: Detect new station if none locked
-    if lock["station"] is None:
+            if station and station != lock.get("candidate_station"):
+                # Replace candidate with new station
+                fare, _, _ = fare_system.get_fare(station)
+                dt = datetime.datetime.now()
+                est_time, _, = fare_system.estimate_travel_time(station, dt)
+                _, _, station_lines, ordered_inters = plan_route(kiosk_station, station, fare_system)
+
+                interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}." if ordered_inters else ""
+
+                lock.update({
+                    "candidate_station": station,
+                    "fare": fare,
+                    "interchange": interchange_note,
+                    "time": est_time,
+                    "station_lines": station_lines,
+                    "ordered_inters": ordered_inters
+                })
+                print(f"[AGENT] session={session_id} switched candidate_station -> {station}")
+            
+            ticket_status = "candidate"
+
+    # -------------------------------
+    # Case 2: Detect new candidate if nothing in lock
+    # -------------------------------
+    if lock.get("station") is None and lock.get("candidate_station") is None:
         clean_input = preprocess_for_station_matching(user_input, user_lang)
         print(f"[AGENT] Cleaned input for station matching: {repr(clean_input)}")
         station, _, _ = find_station(clean_input)
         print(f"[AGENT] Extracted station: {station}")
+
         if station:
             fare, _, _ = fare_system.get_fare(station)
             dt = datetime.datetime.now()
-            time, _, = fare_system.estimate_travel_time(station, dt)
+            est_time, _, = fare_system.estimate_travel_time(station, dt)
             _, _, station_lines, ordered_inters = plan_route(kiosk_station, station, fare_system)
-            # Build note for LLM
-            if ordered_inters:
-                interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}."
-            else:
-                interchange_note = ""
-            
-            fare_info = f"RM{fare:.2f}" if fare is not None else ""
-            destination = f"{station}"
-            time = f"{time}"
-            if fare is not None:
-                lock.update({"station": station, "fare": fare, "interchange": interchange_note, "time": time, "station_lines": station_lines, "ordered_inters": ordered_inters})
-            print(f"[AGENT] session={session_id} locked station candidate set -> {lock}")
+
+            interchange_note = f"Includes interchanges at {', '.join(ordered_inters)}." if ordered_inters else ""
+
+            lock.update({
+                "candidate_station": station,
+                "fare": fare,
+                "interchange": interchange_note,
+                "time": est_time,
+                "station_lines": station_lines,
+                "ordered_inters": ordered_inters
+            })
+            print(f"[AGENT] session={session_id} set candidate_station -> {lock}")
         else:
             fare_info = "None"
-    else:
-        fare_info = f"RM{lock['fare']:.2f}"
-        destination = f"{lock['station']}"
-        time = f"{lock['time']}"
-        # Use stored array from lock
-        if lock["interchange"]:
-            interchange_note = f"Includes interchanges at {', '.join(lock['interchange'])}."
-        else:
-            interchange_note = ""
 
-    # Case 3: If confirmed -> issue ticket
-    if lock["locked"]:
+    # -------------------------------
+    # Case 3: If confirmed purchase (locked + user said yes)
+    # -------------------------------
+    if lock.get("locked", False) and lock.get("station") and is_confirmation_text(user_input, user_lang):
         ticket_id = generate_ticket_id()
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         ticket_text_en = (
             f"Your ticket is issued! From {kiosk_station} to {lock['station']} "
             f"with a fare of RM{lock['fare']:.2f}. {lock['interchange']} "
-            f"The estimated time travel is around {lock['time']} minutes. "
+            f"The estimated travel time is around {lock['time']} minutes. "
             f"Please download this PDF ticket, enjoy your journey!"
         )
         ticket_text_ms = (
@@ -338,7 +371,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
             "interchange": lock["interchange"],
             "datetime": current_time
         }
-        
+
         route_details = {
             "station_lines": lock["station_lines"],
             "interchanges": lock["ordered_inters"]
@@ -347,10 +380,15 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         memory.save_context({"input": "[SYSTEM] Transaction Completed"},
                             {"output": f"--- Ticket transaction completed: {ticket_id} ---"})
         memory.clear()
-        SESSION_LOCKS[session_id] = {"locked": False, "station": None, "fare": None, "interchange": None, "time": None, "station_lines": [], "ordered_inters": []}
-        print(f"[AGENT] session={session_id} ticket issued -> {ticket_id} for station={lock['station']}")
-        
-        return_data = {
+
+        SESSION_LOCKS[session_id] = {
+            "locked": False, "station": None, "candidate_station": None,
+            "fare": None, "interchange": None, "time": None,
+            "station_lines": [], "ordered_inters": []
+        }
+        print(f"[AGENT] session={session_id} ticket issued -> {ticket_id}")
+
+        return {
             "input": user_input,
             "history": "",
             "output": ticket_text,
@@ -363,12 +401,23 @@ def ticket_agent_node(state: KioskState) -> KioskState:
                 route_details=route_details
             )
         }
-        
-        print(f"### DEBUG [ticket_agent_node] Returning={return_data}")
-        
-        return return_data
 
-    # Case 4: Ask for confirmation via LLM
+    # -------------------------------
+    # Case 4: Pass state to LLM for clarification / confirmation
+    # -------------------------------
+    if lock.get("candidate_station"):
+        ticket_status = "candidate"
+        fare_info = f"RM{lock['fare']:.2f}" if lock.get("fare") else ""
+        destination = lock["candidate_station"]
+        time = f"{lock['time']}" if lock.get("time") else ""
+        interchange_note = lock["interchange"] or ""
+    elif lock.get("locked", False) and lock.get("station"):
+        ticket_status = "locked"
+        fare_info = f"RM{lock['fare']:.2f}"
+        destination = lock["station"]
+        time = f"{lock['time']}"
+        interchange_note = lock["interchange"] or ""
+
     reply = llm.invoke(ticket_prompt.format(
         history=history,
         input=user_input,
@@ -377,12 +426,13 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         destination=destination,
         interchange_note=interchange_note,
         time=time,
-        ticket_status="no",
-        language=language
+        ticket_status=ticket_status,
+        language=language,
+        input_contains_exact_station=input_contains_exact_station
     ))
-    print(f"[AGENT] session={session_id} sent confirm prompt (language={language}) lock={lock}")
+    print(f"[AGENT] session={session_id} sent prompt (status={ticket_status}, language={language}) lock={lock}")
 
-    return_data = {
+    return {
         "input": user_input,
         "history": history,
         "output": reply,
@@ -390,13 +440,11 @@ def ticket_agent_node(state: KioskState) -> KioskState:
         "json": build_json_response(
             text=reply,
             query_type="ticket_agent",
-            session_id=session_id,
-            ticket_details=None,
-            route_details=None
+            session_id=session_id
         )
     }
-    print(f"### DEBUG [ticket_agent_node] Returning={return_data}")
-    return return_data
+
+
 
 def qna_agent_node(state: KioskState) -> KioskState:
     print(f"[AGENT] Running qna_agent_node for: {state['input']}")
@@ -409,6 +457,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
     fare_info = "None"
     interchange_note = "None"
     destination = "None"
+    available_stations = all_stations
     clean_input = preprocess_for_station_matching(user_input, user_lang)
     station, line, _ = find_station(clean_input)
     
@@ -439,15 +488,20 @@ def qna_agent_node(state: KioskState) -> KioskState:
             time=time,
             stops=stops,
             line=station_line,
-            language=language
+            language=language,
+            available_stations=", ".join(available_stations)
         ))
     
     else:
         # === STEP 2: Fall back to knowledge base ===
         kb_results = rules_facilities_kb.query(user_input, k=2)
         if kb_results:
-            # Pick best answer (or concatenate top-k answers)
-            reply = kb_results[0]["answer"]
+            # Concatenate top-k answers for context
+            kb_context = "\n".join([f"- {item['question']}: {item['answer']}" for item in kb_results])
+            # Pass context into the LLM prompt
+            reply = llm.invoke(
+                f"{user_input}\n\nRelevant info:\n{kb_context}\n\nPlease answer shortly using the above context."
+            )
         else:
             reply = "Sorry, I couldn't find relevant info."
 

@@ -3,7 +3,7 @@ import tempfile
 import winsound
 
 resp_ms = requests.post("http://localhost:8020/infer", json={
-    "text": "Name saya Kar Weng, saya ialah seorang lelaki gay?",
+    "text": "Testing in Malay. Nama saya Shafiqah Idayu.",
     "speaker": "Shafiqah Idayu"
 })
 with open("ms.wav", "wb") as f: f.write(resp_ms.content)
