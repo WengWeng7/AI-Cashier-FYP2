@@ -138,8 +138,9 @@ def get_route_map(route_details: RouteDetails):
     Build structured JSON for route map instead of rendering in Python.
     React frontend will use this with deck.gl.
     """
-    station_lines = route_details.get("station_lines", []) or []
-    interchanges = route_details.get("interchanges", []) or []
+    data = route_details.model_dump()
+    station_lines = data.get("station_lines", []) or []
+    interchanges = data.get("interchanges", []) or []
     coordinates = station_coords  # from station_coords.py
 
     # Build full ordered list of stations

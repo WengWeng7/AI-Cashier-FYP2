@@ -10,6 +10,7 @@ import os
 import csv
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq, pipeline
 from transformers.models.whisper import tokenization_whisper
+import time
 
 app = FastAPI(title="ASR API")
 
@@ -67,6 +68,7 @@ def get_next_index(session_id: str) -> int:
                     pass
     return last_index + 1
 
+
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), session_id: str = Form(...)):
     audio_bytes = await file.read()
@@ -87,12 +89,16 @@ async def transcribe(file: UploadFile = File(...), session_id: str = Form(...)):
     if pipe is None:
         load_model()
 
+    start_time = time.time()
     # 🔑 Force "transcribe" every time
     result = pipe(
         {"array": audio_np, "sampling_rate": samplerate},
         generate_kwargs={"task": "transcribe"}
     )
+    end_time = time.time()
     transcription = result["text"]
+    print(f"[DEBUG] Transcribed text: {transcription}")
+    print(f"[DEBUG] Transcription time: {end_time - start_time:.2f} seconds")
     
     # Determine sequence number for this session
     index = get_next_index(session_id)

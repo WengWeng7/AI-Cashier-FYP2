@@ -4,9 +4,15 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
+# cloud api
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+import unicodedata
+import os
+from dotenv import load_dotenv
 import re
 import datetime
+import time
 import random
 import string
 from station import FareSystem, find_station, plan_route, lines_data, rules_facilities_kb
@@ -15,8 +21,16 @@ from station import FareSystem, find_station, plan_route, lines_data, rules_faci
 kiosk_station = "Kelana Jaya"
 lang_instruction = "en" #en (English) or ms (Malay)
 fare_system = FareSystem("Fare.csv", from_station=kiosk_station)
+load_dotenv()
 
-llm = OllamaLLM(model="llama3:8b")
+#llm = OllamaLLM(model="llama3:8b")
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",  # or gemini-1.5-flash for faster inference
+    temperature=0,
+    max_output_tokens=512,
+    convert_system_message_to_human=True,
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+)
 memory = ConversationBufferMemory(input_key="input", memory_key="history")
 
 SESSION_LOCKS: dict = {}
@@ -72,6 +86,30 @@ def build_json_response(
         "query_type": query_type
     }
 
+def normalize_user_input(text: str) -> str:
+    """
+    Normalize incoming user input (typed or transcribed).
+    - Lowercases everything
+    - Removes hidden unicode artifacts
+    - Strips punctuation (except alphanumeric & spaces)
+    - Collapses multiple spaces
+    """
+    if not text:
+        return ""
+
+    # Unicode normalization (removes hidden accents, weird tokens)
+    text = unicodedata.normalize("NFKC", text)
+
+    # Lowercase
+    text = text.lower()
+
+    # Remove non-alphanumeric except spaces
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+
+    # Collapse multiple spaces
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
 
 # process the user input for better extraction station matching
 def preprocess_for_station_matching(text: str, lang: str) -> str:
@@ -218,8 +256,8 @@ def router_node(state: KioskState) -> KioskState:
 
     # === Intent keywords (regex-based) ===
     ROUTE_KEYWORDS = [
-        r"\bpath\b", r"\broute\b", r"how to get", r"how do i go",
-        r"how can i go", r"best route", r"fastest route", r"directions?", 
+        r"\bpath\b", r"\broute\b", r"how to get", r"how do i go", r"how do i reach",
+        r"how can i go", r"best route", r"fastest route", r"directions?", r"how do i get to",
         r"\bjalan\b", r"cara pergi", r"macam mana nak ke", r"\bmap\b",
         r"bagaimana untuk ke", r"arah?", r"\blaluan\b", r"\bke mana\b"
     ]
@@ -245,12 +283,12 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     session_id = state.get("session_id", "default")
     lock = get_session_lock(session_id)
 
-    user_input = state["input"]
+    user_input = normalize_user_input(state["input"])
     user_lang = lang_instruction
     language = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
     available_stations = all_stations
-    input_contains_exact_station = any(station in user_input for station in available_stations)
+    input_contains_exact_station = any(station in normalize_user_input(user_input) for station in available_stations)
 
     fare_info = "None"
     destination = "None"
@@ -432,13 +470,15 @@ def ticket_agent_node(state: KioskState) -> KioskState:
     ))
     print(f"[AGENT] session={session_id} sent prompt (status={ticket_status}, language={language}) lock={lock}")
 
+    reply_text = reply.content if hasattr(reply, "content") else str(reply)
+    
     return {
         "input": user_input,
         "history": history,
-        "output": reply,
+        "output": reply_text,
         "route": "ticket_agent",
         "json": build_json_response(
-            text=reply,
+            text=reply_text,
             query_type="ticket_agent",
             session_id=session_id
         )
@@ -448,7 +488,7 @@ def ticket_agent_node(state: KioskState) -> KioskState:
 
 def qna_agent_node(state: KioskState) -> KioskState:
     print(f"[AGENT] Running qna_agent_node for: {state['input']}")
-    user_input = state["input"]
+    user_input = normalize_user_input(state["input"])
     user_lang = lang_instruction
     language = "Malay" if user_lang == "ms" else "English"
     history = state.get("history", "")
@@ -500,20 +540,22 @@ def qna_agent_node(state: KioskState) -> KioskState:
             kb_context = "\n".join([f"- {item['question']}: {item['answer']}" for item in kb_results])
             # Pass context into the LLM prompt
             reply = llm.invoke(
-                f"{user_input}\n\nRelevant info:\n{kb_context}\n\nPlease answer shortly using the above context."
+                f"{user_input}\n\nRelevant info:\n{kb_context}\n\nPlease give short and simple answers using the above context."
             )
         else:
             reply = "Sorry, I couldn't find relevant info."
 
     memory.clear()
     
+    reply_text = reply.content if hasattr(reply, "content") else str(reply)
+    
     return_data = {
         "input": user_input,
         "history": history,
-        "output": reply,
+        "output": reply_text,
         "route": "",
         "json": build_json_response(
-            text=reply,
+            text=reply_text,
             query_type="qna_agent",
             session_id=state["session_id"],
             ticket_details=None,
@@ -527,7 +569,7 @@ def qna_agent_node(state: KioskState) -> KioskState:
 
 def route_planning_node(state: KioskState) -> KioskState:
     print(f"[AGENT] Running route_planning_node for: {state['input']}")
-    user_input = state["input"]
+    user_input = normalize_user_input(state["input"])
     user_lang = lang_instruction
     history = state.get("history", "")
     
@@ -591,31 +633,41 @@ app = workflow.compile(checkpointer=checkpointer)
 
 # ==== RUN FUNCTION ====
 def run_llm(user_message: str, session_id: str):
+    # sanitize input
+    clean_message = normalize_user_input(user_message)
     state = {
-        "input": user_message,
+        "input": clean_message,
         "history": memory.load_memory_variables({}).get("history", ""),
         "output": "",
         "route": "",
         "session_id": session_id
     }
     print(f"\n### DEBUG: Incoming state={state}")
-    
+    start_time = time.time()
     result = app.invoke(
         state,
         config={"configurable": {"thread_id": session_id}}
     )
-    
+    end_time = time.time()
     print(f"### DEBUG: Raw result from workflow={result}")
+    print(f"### DEBUG: LLM response time: {end_time - start_time:.2f} seconds")
 
-    # only persist if it's ticket agent
+    # 🔧 Normalize output so memory always gets plain string
+    raw_output = result.get("output", "")
+    if hasattr(raw_output, "content"):   # AIMessage or similar
+        output_text = raw_output.content
+    else:
+        output_text = str(raw_output)
+
+    # Only persist if it's ticket agent
     if result["route"] == "ticket_agent":
-        memory.save_context({"input": user_message}, {"output": result["output"]})
-        
-    # fallback JSON
+        memory.save_context({"input": user_message}, {"output": output_text})
+
+    # Fallback JSON
     json_data = result.get("json")
-    if not json_data:  
+    if not json_data:
         json_data = build_json_response(
-            text=result.get("output", ""),
+            text=output_text,
             query_type=result.get("route", "unknown"),
             session_id=session_id,
             ticket_details=None,
@@ -636,7 +688,6 @@ def run_llm(user_message: str, session_id: str):
         "station_lines": [],
         "interchanges": []
     })
-    
-    print(f"### DEBUG: Final JSON response={json_data}\n")
 
+    print(f"### DEBUG: Final JSON response={json_data}\n")
     return json_data
