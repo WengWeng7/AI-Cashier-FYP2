@@ -1,14 +1,11 @@
 General Information
-Current Directory:
+Current Directory (relevant to the project):
 FYP2/
 ├── ASR_Module/ # Automatic Speech Recognition (port 8000)
 ├── LLM_Module/ # Language Model / Chat Module (port 8010)
 ├── TTS_Module/ # Text-to-Speech Module (port 8020)
-├── Fare2.py
-├── LLM_UI_Chat2.py
 ├── metro_data_full.py
 ├── kl_metro_multilingual_faq.jsonl
-├── TTS_XTTS_FT.py
 └── venv310/ # Virtual environment (ignored in .gitignore)FYP2/
 
 Port Numbers for Modules
@@ -32,7 +29,7 @@ Install ffmpeg
 - Add the /bin in system environment PATH.
 
 Run the API file whisperms.py
-- uvicorn whisperms:app --host 0.0.0.0 --port 8000 --reload
+- uvicorn asr_api:app --host 0.0.0.0 --port 8000 --reload
 
 Docker Installation
 Prerequisites: Docker Compose & Docker Engine, download Docker Desktop (Windows).
@@ -56,13 +53,16 @@ Prerequisites:
 - ollama pull llama3:8b
 - ollama run llama3:8b
 
+## or use gemini llm api, gemini-1.5-flash or gemini-2.5-flash
+## just enter your gemini api key in /LLM_Module/.env
+
 Install the requirements
 - pip install -r requirements.txt
 
 Run the API file llm_api.py
 - uvicorn llm_api:app --host 0.0.0.0 --port 8010 --reload
 
-When successfully hosting LLM Module API, check out LLM UI in llm_chat_ui.py
+When successfully hosting LLM Module API, you can check out LLM UI in llm_chat_ui.py
 - streamlit run llm_chat_ui.py
 
 3. TTS_Module (Windows/Linux)
